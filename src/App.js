@@ -125,17 +125,16 @@ export default function ProductionSystem() {
     
     try {
       setIsLoading(true);
-      const ordersRef = collection(db, 'orders');
-      const q = query(ordersRef, where('id', '==', newOrderNum), where('status', '!=', 'archived'));
-      const snapshot = await getDocs(q);
       
-      if (!snapshot.empty) {
+      // Sprawdzenie czy takie zamówienie już istnieje
+      const existing = orders.find(o => o.id === newOrderNum && o.status !== 'archived');
+      if (existing) {
         alert('To zamówienie już istnieje!');
         setIsLoading(false);
         return;
       }
 
-      await addDoc(ordersRef, {
+      await addDoc(collection(db, 'orders'), {
         id: newOrderNum,
         createdAt: new Date().toISOString(),
         problems: [],
@@ -151,7 +150,7 @@ export default function ProductionSystem() {
       setSelectedOrderId(newOrderNum);
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd dodania zamówienia');
+      alert('Błąd dodania zamówienia: ' + err.message);
     } finally {
       setIsLoading(false);
     }
