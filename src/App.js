@@ -3,52 +3,30 @@ import React, { useState, useEffect, useRef } from 'react';
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDKUns-Jmw1RR9afnymTKF1xdjImHJGkNU",
   authDomain: "system-produkcji-d0256.firebaseapp.com",
-  databaseURL: "https://system-produkcji-d0256-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "system-produkcji-d0256",
   storageBucket: "system-produkcji-d0256.firebasestorage.app",
   messagingSenderId: "340231895219",
-  appId: "1:340231895219:web:50fc85275a51d2114998c6",
-  measurementId: "G-B33RZ93QRL"
+  appId: "1:340231895219:web:50fc85275a51d2114998c6"
 };
 
-// Minimal Firebase implementation
 class FirebaseManager {
   constructor(config) {
     this.config = config;
-    this.db = null;
-    this.storage = null;
-    this.auth = null;
     this.currentUser = null;
     this.ordersCache = [];
+    this.usersCache = [];
   }
 
   async init() {
-    // Simulated Firebase initialization
     console.log('Firebase initialized:', this.config.projectId);
   }
 
   async login(email, password) {
-    // Simulated login - in real app use Firebase Auth
-    return { uid: 'user-' + Math.random(), email };
-  }
-
-  async createOrder(orderData) {
-    const id = 'order-' + Date.now();
-    const order = {
-      id,
-      ...orderData,
-      createdAt: new Date().toISOString(),
-      problems: [],
-      archived: false,
-      history: [{
-        timestamp: new Date().toLocaleString('pl-PL'),
-        user: this.currentUser?.email || 'Unknown',
-        action: 'Zamówienie rozpoczęte'
-      }]
-    };
-    this.ordersCache.push(order);
-    localStorage.setItem('orders-' + this.config.projectId, JSON.stringify(this.ordersCache));
-    return order;
+    const user = this.usersCache.find(u => u.email === email && u.password === password);
+    if (user) {
+      return { uid: user.id, email: user.email, name: user.name, role: user.role };
+    }
+    return null;
   }
 
   async getOrders() {
@@ -63,18 +41,54 @@ class FirebaseManager {
     return this.ordersCache.find(o => o.id === orderId);
   }
 
-  async uploadImage(file) {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const photoData = {
-          url: e.target.result,
-          uploadedAt: new Date().toISOString()
-        };
-        resolve(photoData);
-      };
-      reader.readAsDataURL(file);
-    });
+  async createOrder(orderData) {
+    const id = 'order-' + Date.now();
+    const order = {
+      id,
+      ...orderData,
+      createdAt: new Date().toISOString(),
+      problems: [],
+      archived: false,
+      statusChanged: false,
+      history: [{
+        timestamp: new Date().toLocaleString('pl-PL'),
+        user: this.currentUser?.name || 'Unknown',
+        action: 'Zamówienie rozpoczęte'
+      }]
+    };
+    this.ordersCache.push(order);
+    localStorage.setItem('orders-' + this.config.projectId, JSON.stringify(this.ordersCache));
+    return order;
+  }
+
+  async getUsers() {
+    const stored = localStorage.getItem('users-' + this.config.projectId);
+    this.usersCache = stored ? JSON.parse(stored) : [
+      { id: 1, name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
+      { id: 2, name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
+      { id: 3, name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
+      { id: 4, name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
+    ];
+    return this.usersCache;
+  }
+
+  async saveUsers() {
+    localStorage.setItem('users-' + this.config.projectId, JSON.stringify(this.usersCache));
+  }
+
+  async addUser(user) {
+    const newUser = {
+      id: Math.max(...this.usersCache.map(u => u.id), 0) + 1,
+      ...user
+    };
+    this.usersCache.push(newUser);
+    await this.saveUsers();
+    return newUser;
+  }
+
+  async deleteUser(userId) {
+    this.usersCache = this.usersCache.filter(u => u.id !== userId);
+    await this.saveUsers();
   }
 }
 
@@ -86,24 +100,34 @@ export default function ProductionSystem() {
   const [loginPassword, setLoginPassword] = useState('1234');
   
   const [orders, setOrders] = useState([]);
+  const [users, setUsers] = useState([]);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [newOrderNum, setNewOrderNum] = useState('');
   const [issueDesc, setIssueDesc] = useState('');
   const [issuePhoto, setIssuePhoto] = useState(null);
   const [settings, setSettings] = useState({ notificationEmail: 'manager@company.com' });
   const [newEmail, setNewEmail] = useState(settings.notificationEmail);
+  
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('operator');
+  
+  const [activeTab, setActiveTab] = useState('orders');
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const initFirebase = async () => {
+    const init = async () => {
       await firebaseManager.init();
       const loadedOrders = await firebaseManager.getOrders();
+      const loadedUsers = await firebaseManager.getUsers();
       setOrders(loadedOrders);
+      setUsers(loadedUsers);
     };
-    initFirebase();
+    init();
   }, [firebaseManager]);
 
   const handleLogin = async () => {
@@ -112,9 +136,14 @@ export default function ProductionSystem() {
       return;
     }
     const user = await firebaseManager.login(loginEmail, loginPassword);
-    firebaseManager.currentUser = user;
-    setCurrentUser(user);
-    setAppState('dashboard');
+    if (user) {
+      firebaseManager.currentUser = user;
+      setCurrentUser(user);
+      setAppState('dashboard');
+      setActiveTab('orders');
+    } else {
+      alert('Błędny email lub hasło');
+    }
   };
 
   const handleLogout = () => {
@@ -185,7 +214,7 @@ export default function ProductionSystem() {
       description: issueDesc,
       cut: false,
       repaired: false,
-      addedBy: currentUser?.email || 'Unknown',
+      addedBy: currentUser?.name || 'Unknown',
       addedAt: new Date().toLocaleString('pl-PL')
     };
 
@@ -194,7 +223,7 @@ export default function ProductionSystem() {
       updatedOrder.problems.push(problem);
       updatedOrder.history.push({
         timestamp: new Date().toLocaleString('pl-PL'),
-        user: currentUser?.email || 'Unknown',
+        user: currentUser?.name || 'Unknown',
         action: `Dodał problem: "${issueDesc}"`
       });
       await firebaseManager.updateOrder(updatedOrder.id, updatedOrder);
@@ -218,7 +247,7 @@ export default function ProductionSystem() {
       order.problems = order.problems.filter(p => p.id !== problemId);
       order.history.push({
         timestamp: new Date().toLocaleString('pl-PL'),
-        user: currentUser?.email || 'Unknown',
+        user: currentUser?.name || 'Unknown',
         action: `Rozwiązał problem: "${problem.description}"`
       });
     }
@@ -236,18 +265,60 @@ export default function ProductionSystem() {
       return;
     }
 
-    alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${orderId} zostało całkowicie wyprodukowane!"`);
-
-    order.archived = true;
+    order.statusChanged = false;
     order.history.push({
       timestamp: new Date().toLocaleString('pl-PL'),
-      user: currentUser?.email || 'Unknown',
-      action: 'Zamówienie zakończone'
+      user: currentUser?.name || 'Unknown',
+      action: 'Zamówienie zakończone - oczekuje na zmianę statusu'
     });
 
     await firebaseManager.updateOrder(order.id, order);
     setOrders([...orders]);
     setSelectedOrderId(null);
+  };
+
+  const handleConfirmStatus = async (orderId) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    order.statusChanged = true;
+    order.archived = true;
+    order.history.push({
+      timestamp: new Date().toLocaleString('pl-PL'),
+      user: currentUser?.name || 'Unknown',
+      action: 'Status zmieniony w sklepie - Zamówienie zarchiwizowane'
+    });
+
+    alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${orderId} zostało całkowicie wyprodukowane i wysłane!"`);
+
+    await firebaseManager.updateOrder(order.id, order);
+    setOrders([...orders]);
+  };
+
+  const handleAddUser = async () => {
+    if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
+      alert('Wypełnij wszystkie pola');
+      return;
+    }
+    await firebaseManager.addUser({
+      name: newUserName,
+      email: newUserEmail,
+      password: newUserPassword,
+      role: newUserRole
+    });
+    setUsers(firebaseManager.usersCache);
+    setNewUserName('');
+    setNewUserEmail('');
+    setNewUserPassword('');
+    setNewUserRole('operator');
+    alert('Użytkownik dodany!');
+  };
+
+  const handleDeleteUser = async (userId) => {
+    if (window.confirm('Usunąć tego użytkownika?')) {
+      await firebaseManager.deleteUser(userId);
+      setUsers(firebaseManager.usersCache);
+    }
   };
 
   const handleUpdateEmail = () => {
@@ -260,6 +331,8 @@ export default function ProductionSystem() {
   };
 
   const activeOrders = orders.filter(o => !o.archived);
+  const pendingStatusOrders = orders.filter(o => !o.archived && !o.statusChanged && o.problems.length === 0);
+  const archivedOrders = orders.filter(o => o.archived);
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
   const unrepairedCount = orders.reduce((sum, o) => sum + o.problems.filter(p => !(p.cut && p.repaired)).length, 0);
 
@@ -274,7 +347,7 @@ export default function ProductionSystem() {
         .btn-primary { border-color: #2196F3; color: #2196F3; }
         .form-group { margin-bottom: 1rem; }
         .form-group label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 6px; }
-        .form-group input, .form-group textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
+        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
         .problem-row { background: #f9f9f9; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; border-left: 3px solid #ff9800; }
         .checkbox-group { display: flex; gap: 1.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
         .order-card { background: white; border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; cursor: pointer; border-radius: 8px; }
@@ -286,12 +359,20 @@ export default function ProductionSystem() {
         .stat-label { font-size: 11px; color: #666; margin-top: 4px; }
         .warning-box { background: #fff3cd; border-left: 3px solid #ff9800; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
         .success-box { background: #d4edda; border-left: 3px solid #4CAF50; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
+        .info-box { background: #d1ecf1; border-left: 3px solid #17a2b8; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; background: white; padding: 1rem; border-radius: 8px; border: 1px solid #ddd; }
         .photo-preview { max-width: 100%; max-height: 200px; border-radius: 4px; margin-top: 8px; }
         .video-container { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
         video { width: 100%; height: auto; }
         canvas { display: none; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; }
+        .tab-btn { padding: 8px 16px; border: 1px solid #ddd; background: white; border-radius: 8px; cursor: pointer; font-size: 13px; }
+        .tab-btn.active { background: #2196F3; border-color: #2196F3; color: white; }
+        .user-row { background: #f9f9f9; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .user-info { flex: 1; }
+        .user-role { display: inline-block; padding: 3px 8px; background: #e3f2fd; color: #2196F3; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 0.5rem; }
+        .badge { display: inline-block; padding: 3px 8px; background: #fff3cd; color: #856404; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 0.5rem; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
@@ -318,10 +399,12 @@ export default function ProductionSystem() {
           <div className="header">
             <div>
               <h1 style={{ margin: '0 0 4px 0' }}>🏭 System Zamówień</h1>
-              <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Zalogowany: {currentUser.email}</p>
+              <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Zalogowany: {currentUser.name} ({currentUser.role})</p>
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
-              <button className="btn btn-primary" onClick={() => setAppState('settings')}>⚙️ Ustawienia</button>
+              {currentUser.role === 'admin' && (
+                <button className="btn btn-primary" onClick={() => { setActiveTab('settings'); setAppState('settings'); }}>⚙️ Ustawienia</button>
+              )}
               <button className="btn btn-danger" onClick={handleLogout}>Wyloguj</button>
             </div>
           </div>
@@ -336,109 +419,213 @@ export default function ProductionSystem() {
               <div className="stat-label">Do naprawy</div>
             </div>
             <div className="stat-box">
-              <div className="stat-number" style={{ color: '#4CAF50' }}>{orders.filter(o => o.archived).length}</div>
+              <div className="stat-number" style={{ color: '#17a2b8' }}>{pendingStatusOrders.length}</div>
+              <div className="stat-label">Czeka status</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-number" style={{ color: '#4CAF50' }}>{archivedOrders.length}</div>
               <div className="stat-label">Zarchiwizowane</div>
             </div>
           </div>
 
-          <div className="grid">
-            <div>
-              <h3 style={{ marginBottom: '1rem' }}>+ Nowe zamówienie</h3>
-              <div className="card">
-                <div className="form-group">
-                  <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
+          <div className="tabs">
+            {(currentUser.role === 'operator' || currentUser.role === 'admin') && (
+              <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => setActiveTab('orders')}>📦 Zamówienia</button>
+            )}
+            {currentUser.role === 'order_admin' && (
+              <button className={`tab-btn ${activeTab === 'status' ? 'active' : ''}`} onClick={() => setActiveTab('status')}>📋 Zmiana statusu</button>
+            )}
+            <button className={`tab-btn ${activeTab === 'archive' ? 'active' : ''}`} onClick={() => setActiveTab('archive')}>📂 Archiwum</button>
+          </div>
+
+          {activeTab === 'orders' && (currentUser.role === 'operator' || currentUser.role === 'admin') && (
+            <div className="grid">
+              <div>
+                <h3 style={{ marginBottom: '1rem' }}>+ Nowe zamówienie</h3>
+                <div className="card">
+                  <div className="form-group">
+                    <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
+                  </div>
+                  <button className="btn btn-success" onClick={handleStartOrder}>Rozpocznij</button>
                 </div>
-                <button className="btn btn-success" onClick={handleStartOrder}>Rozpocznij</button>
+
+                <h3 style={{ marginBottom: '1rem' }}>Zamówienia ({activeOrders.length})</h3>
+                {activeOrders.length === 0 ? (
+                  <p style={{ textAlign: 'center', color: '#999' }}>Brak aktywnych zamówień</p>
+                ) : (
+                  activeOrders.map(order => {
+                    const unrepairedProblems = order.problems.filter(p => !(p.cut && p.repaired));
+                    return (
+                      <div key={order.id} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                        <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
+                        <div style={{ fontSize: '12px', color: '#666', marginBottom: '6px' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</div>
+                        {unrepairedProblems.length > 0 && (
+                          <div style={{ fontSize: '11px', color: '#ff9800' }}>⚠️ {unrepairedProblems.length} błędy</div>
+                        )}
+                        {order.problems.length === 0 && !order.statusChanged && (
+                          <div style={{ fontSize: '11px', color: '#17a2b8' }}>📋 Czeka na zmianę statusu</div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
 
-              <h3 style={{ marginBottom: '1rem' }}>Zamówienia ({activeOrders.length})</h3>
-              {activeOrders.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#999' }}>Brak aktywnych zamówień</p>
-              ) : (
-                activeOrders.map(order => {
-                  const unrepairedProblems = order.problems.filter(p => !(p.cut && p.repaired));
-                  return (
-                    <div key={order.id} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
-                      <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
-                      <div style={{ fontSize: '12px', color: '#666' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</div>
-                      {unrepairedProblems.length > 0 && (
-                        <div style={{ fontSize: '11px', color: '#ff9800', marginTop: '6px' }}>⚠️ {unrepairedProblems.length} błędy do naprawy</div>
-                      )}
+              {selectedOrder && (
+                <div>
+                  <div className="card">
+                    <h3 style={{ marginBottom: '1rem' }}>Zamówienie #{selectedOrder.id}</h3>
+
+                    {selectedOrder.problems.length > 0 && (
+                      <div style={{ marginBottom: '1.5rem' }}>
+                        <h4 style={{ marginBottom: '0.75rem' }}>Błędy:</h4>
+                        {selectedOrder.problems.map(p => (
+                          <div key={p.id} className="problem-row">
+                            {p.photo && <img src={p.photo} className="photo-preview" alt="Problem photo" />}
+                            <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
+                            <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
+                            <div className="checkbox-group">
+                              <label>
+                                <input type="checkbox" checked={p.cut} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} />
+                                {' '}Wycięty element
+                              </label>
+                              <label>
+                                <input type="checkbox" checked={p.repaired} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} />
+                                {' '}Dorobiony
+                              </label>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <h4 style={{ marginBottom: '0.75rem' }}>Dodaj błąd</h4>
+                    
+                    <div className="form-group">
+                      <label>Zdjęcie (z kamery lub plik)</label>
+                      <div style={{ marginBottom: '1rem' }}>
+                        <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }}>📷 Włącz kamerę</button>
+                        <button className="btn" onClick={() => fileInputRef.current?.click()}>📤 Prześlij plik</button>
+                        <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} />
+                      </div>
+                      {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
                     </div>
-                  );
-                })
+
+                    <div className="video-container" style={{ display: selectedOrder ? 'block' : 'none' }}>
+                      <video ref={videoRef} autoPlay playsInline></video>
+                      <canvas ref={canvasRef} width={640} height={480}></canvas>
+                    </div>
+
+                    {videoRef.current?.srcObject && (
+                      <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }}>Zrób zdjęcie</button>
+                    )}
+
+                    <div className="form-group">
+                      <label>Opis problemu</label>
+                      <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..."></textarea>
+                    </div>
+
+                    <button className="btn btn-success" onClick={handleAddProblem}>Dodaj błąd</button>
+
+                    {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length > 0 && (
+                      <div className="warning-box">⚠️ Czekasz na naprawę {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
+                    )}
+
+                    {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length > 0 && (
+                      <div className="success-box">✓ Wszystkie błędy naprawione!</div>
+                    )}
+
+                    {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length === 0 && !selectedOrder.statusChanged && (
+                      <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)}>
+                        ✓ Zlecenie zakończone
+                      </button>
+                    )}
+
+                    {selectedOrder.statusChanged && (
+                      <div className="info-box">✓ Status zmieniony w sklepie - w archiwum</div>
+                    )}
+
+                    <h4 style={{ marginTop: '1.5rem', marginBottom: '0.75rem' }}>Historia</h4>
+                    <div style={{ background: '#f9f9f9', padding: '0.75rem', borderRadius: '4px', fontSize: '12px', maxHeight: '200px', overflowY: 'auto' }}>
+                      {selectedOrder.history.map((h, i) => (
+                        <div key={i} style={{ paddingBottom: '0.5rem', borderBottom: '1px solid #ddd' }}>
+                          <strong>{h.user}</strong> - {h.action}<br />
+                          <span style={{ fontSize: '11px', color: '#999' }}>{h.timestamp}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
+          )}
 
-            {selectedOrder && (
-              <div>
-                <div className="card">
-                  <h3 style={{ marginBottom: '1rem' }}>Zamówienie #{selectedOrder.id}</h3>
+          {activeTab === 'status' && currentUser.role === 'order_admin' && (
+            <div>
+              <h2>Zmiana statusu zamówień</h2>
+              {pendingStatusOrders.length === 0 ? (
+                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień do zmiany statusu</div>
+              ) : (
+                pendingStatusOrders.map(order => (
+                  <div key={order.id} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '1rem', borderBottom: '1px solid #ddd' }}>
+                      <div>
+                        <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
+                      </div>
+                      <button className="btn btn-success" onClick={() => handleConfirmStatus(order.id)}>✓ Zmieniony w sklepie</button>
+                    </div>
+                    {order.problems.length > 0 && (
+                      <div>
+                        <p style={{ fontSize: '12px', color: '#666', marginBottom: '0.5rem' }}>Elementy które były naprawiane:</p>
+                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '13px' }}>
+                          {order.problems.map(p => (
+                            <li key={p.id}>{p.description}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
 
+          {activeTab === 'archive' && (
+            <div>
+              <h2>Zarchiwizowane zamówienia ({archivedOrders.length})</h2>
+              {archivedOrders.length === 0 ? (
+                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zarchiwizowanych zamówień</div>
+              ) : (
+                archivedOrders.map(order => (
+                  <div key={order.id} className="order-card" onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
+                    <div style={{ fontSize: '12px', color: '#666', marginBottom: '6px' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</div>
+                    {order.problems.length > 0 && (
+                      <div style={{ fontSize: '11px', color: '#666' }}>Naprawianych elementów: {order.problems.length}</div>
+                    )}
+                  </div>
+                ))
+              )}
+
+              {selectedOrderId && selectedOrder && selectedOrder.archived && (
+                <div className="card" style={{ marginTop: '1.5rem' }}>
+                  <h3 style={{ marginBottom: '1rem' }}>Szczegóły zamówienia #{selectedOrder.id}</h3>
+                  
                   {selectedOrder.problems.length > 0 && (
                     <div style={{ marginBottom: '1.5rem' }}>
-                      <h4 style={{ marginBottom: '0.75rem' }}>Błędy:</h4>
+                      <h4 style={{ marginBottom: '0.75rem' }}>Naprawiane elementy:</h4>
                       {selectedOrder.problems.map(p => (
                         <div key={p.id} className="problem-row">
                           {p.photo && <img src={p.photo} className="photo-preview" alt="Problem photo" />}
                           <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
-                          <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
-                          <div className="checkbox-group">
-                            <label>
-                              <input type="checkbox" checked={p.cut} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} />
-                              {' '}Wycięty element
-                            </label>
-                            <label>
-                              <input type="checkbox" checked={p.repaired} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} />
-                              {' '}Dorobiony
-                            </label>
-                          </div>
+                          <p style={{ margin: '0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  <h4 style={{ marginBottom: '0.75rem' }}>Dodaj błąd</h4>
-                  
-                  <div className="form-group">
-                    <label>Zdjęcie (z kamery lub plik)</label>
-                    <div style={{ marginBottom: '1rem' }}>
-                      <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }}>📷 Włącz kamerę</button>
-                      <button className="btn" onClick={() => fileInputRef.current?.click()}>📤 Prześlij plik</button>
-                      <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} />
-                    </div>
-                    {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
-                  </div>
-
-                  <div className="video-container" style={{ display: selectedOrder ? 'block' : 'none' }}>
-                    <video ref={videoRef} autoPlay playsInline></video>
-                    <canvas ref={canvasRef} width={640} height={480}></canvas>
-                  </div>
-
-                  {videoRef.current?.srcObject && (
-                    <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }}>Zrób zdjęcie</button>
-                  )}
-
-                  <div className="form-group">
-                    <label>Opis problemu</label>
-                    <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..."></textarea>
-                  </div>
-
-                  <button className="btn btn-success" onClick={handleAddProblem}>Dodaj błąd</button>
-
-                  {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length > 0 && (
-                    <div className="warning-box">⚠️ Czekasz na naprawę {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
-                  )}
-
-                  {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length > 0 && (
-                    <div className="success-box">✓ Wszystkie błędy naprawione!</div>
-                  )}
-
-                  <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} disabled={selectedOrder.problems.some(p => !(p.cut && p.repaired))} onClick={() => handleCompleteOrder(selectedOrder.id)}>
-                    {selectedOrder.problems.some(p => !(p.cut && p.repaired)) ? '✗ Nie można zamknąć' : '✓ Zlecenie zakończone'}
-                  </button>
-
-                  <h4 style={{ marginTop: '1.5rem', marginBottom: '0.75rem' }}>Historia</h4>
+                  <h4 style={{ marginBottom: '0.75rem' }}>Historia:</h4>
                   <div style={{ background: '#f9f9f9', padding: '0.75rem', borderRadius: '4px', fontSize: '12px' }}>
                     {selectedOrder.history.map((h, i) => (
                       <div key={i} style={{ paddingBottom: '0.5rem', borderBottom: '1px solid #ddd' }}>
@@ -448,18 +635,19 @@ export default function ProductionSystem() {
                     ))}
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
-      {appState === 'settings' && (
+      {appState === 'settings' && currentUser && currentUser.role === 'admin' && (
         <div>
           <div className="header">
             <h1 style={{ margin: '0' }}>⚙️ Ustawienia</h1>
             <button className="btn" onClick={() => setAppState('dashboard')}>← Wróć</button>
           </div>
+
           <div className="grid">
             <div>
               <h3>Email powiadomień</h3>
@@ -470,6 +658,48 @@ export default function ProductionSystem() {
                 </div>
                 <button className="btn btn-success" onClick={handleUpdateEmail}>Zapisz</button>
                 <p style={{ fontSize: '12px', color: '#666', marginTop: '1rem' }}>Aktualny: {settings.notificationEmail}</p>
+              </div>
+            </div>
+
+            <div>
+              <h3>Zarządzanie pracownikami</h3>
+              <div className="card">
+                <h4 style={{ margin: '0 0 1rem 0' }}>Dodaj nowego pracownika</h4>
+                <div className="form-group">
+                  <label>Imię i nazwisko</label>
+                  <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Jan Kowalski" />
+                </div>
+                <div className="form-group">
+                  <label>Email</label>
+                  <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="jan@company.com" />
+                </div>
+                <div className="form-group">
+                  <label>Hasło</label>
+                  <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="1234" />
+                </div>
+                <div className="form-group">
+                  <label>Rola</label>
+                  <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}>
+                    <option value="operator">Operator</option>
+                    <option value="order_admin">Admin Jakości (zmiana statusu)</option>
+                    <option value="admin">Administrator</option>
+                  </select>
+                </div>
+                <button className="btn btn-success" onClick={handleAddUser}>Dodaj pracownika</button>
+
+                <h4 style={{ margin: '1.5rem 0 1rem 0' }}>Aktualni pracownicy</h4>
+                {users.map(u => (
+                  <div key={u.id} className="user-row">
+                    <div className="user-info">
+                      <div style={{ fontWeight: 'bold' }}>{u.name}</div>
+                      <div style={{ fontSize: '12px', color: '#666' }}>{u.email}</div>
+                      <span className="user-role">{u.role === 'order_admin' ? 'Admin Jakości' : u.role === 'admin' ? 'Administrator' : 'Operator'}</span>
+                    </div>
+                    {u.id !== currentUser.uid && (
+                      <button className="btn btn-danger" onClick={() => handleDeleteUser(u.id)}>Usuń</button>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           </div>
