@@ -11,6 +11,13 @@ const FIREBASE_CONFIG = {
   appId: "1:340231895219:web:50fc85275a51d2114998c6"
 };
 
+const GOOGLE_CONFIG = {
+  CLIENT_ID: '736317012952-856e5b7qsgqq346845eb7kgu4qokq49d.apps.googleusercontent.com',
+  PARENT_FOLDER_ID: '1R8zz1X_qmRDMM3X82jI_0lhDLF6qEpTe',
+  DISCOVERY_DOCS: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+  SCOPES: 'https://www.googleapis.com/auth/drive.file'
+};
+
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 
@@ -37,6 +44,7 @@ const compressImage = async (file) => {
 export default function ProductionSystem() {
   const [appState, setAppState] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
+  const [googleAuth, setGoogleAuth] = useState(null);
   const [loginEmail, setLoginEmail] = useState('op1@company.com');
   const [loginPassword, setLoginPassword] = useState('1234');
   
@@ -58,10 +66,34 @@ export default function ProductionSystem() {
   const [activeTab, setActiveTab] = useState('orders');
   const [confirmModal, setConfirmModal] = useState(null);
   const [moveConfirmModal, setMoveConfirmModal] = useState(null);
+  const [photoSession, setPhotoSession] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const streamRef = useRef(null);
+
+  // Inicjalizuj Google API
+  useEffect(() => {
+    const initGoogleApi = () => {
+      const script = document.createElement('script');
+      script.src = 'https://apis.google.com/js/api.js';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        window.gapi.load('client:auth2', () => {
+          window.gapi.client.init({
+            clientId: GOOGLE_CONFIG.CLIENT_ID,
+            discoveryDocs: GOOGLE_CONFIG.DISCOVERY_DOCS,
+            scope: GOOGLE_CONFIG.SCOPES
+          }).then(() => {
+            setGoogleAuth(window.gapi.auth2.getAuthInstance());
+          }).catch(err => console.error('Google API Error:', err));
+        });
+      };
+      document.body.appendChild(script);
+    };
+    initGoogleApi();
+  }, []);
 
   // Załaduj użytkowników
   useEffect(() => {
@@ -74,6 +106,7 @@ export default function ProductionSystem() {
               { name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
               { name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
               { name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
+              { name: 'Magazynowy', email: 'mag@company.com', password: '1234', role: 'warehouse' },
               { name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
             ];
             demoUsers.forEach(user => addDoc(usersRef, user));
@@ -117,7 +150,7 @@ export default function ProductionSystem() {
     cleanupArchived();
   }, [orders]);
 
-  // CZYŚĆ STATE i WYŁĄCZ KAMERĘ gdy zmieni się selectedOrderId
+  // CZYŚĆ STATE i WYŁĄCZ KAMERĘ
   useEffect(() => {
     if (selectedOrderId === null) {
       setIssueDesc('');
@@ -141,6 +174,9 @@ export default function ProductionSystem() {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    if (googleAuth) {
+      googleAuth.signOut();
+    }
     setCurrentUser(null);
     setAppState('login');
     setSelectedOrderId(null);
@@ -154,6 +190,16 @@ export default function ProductionSystem() {
     const user = users.find(u => u.email === loginEmail && u.password === loginPassword);
     if (user) {
       setCurrentUser({ uid: user.id, ...user });
+      
+      // Jeśli magazynowy - zaloguj do Google
+      if (user.role === 'warehouse' && googleAuth) {
+        try {
+          await googleAuth.signIn();
+        } catch (err) {
+          console.error('Google login error:', err);
+        }
+      }
+      
       setAppState('dashboard');
       setActiveTab('orders');
     } else {
@@ -171,7 +217,7 @@ export default function ProductionSystem() {
       setIsLoading(true);
       const existing = orders.find(o => o.id === newOrderNum && o.status !== 'archived');
       if (existing) {
-        alert('To zamówienie już istnieje!');
+        alert('To zamówienie już istnieje! Uzupełnij dane w istniejącym rekordzie.');
         return;
       }
 
@@ -414,6 +460,151 @@ export default function ProductionSystem() {
     setConfirmModal(null);
   };
 
+  // Google Drive - upload zdjęcia
+  const uploadPhotoToGoogleDrive = async (orderId, photoBase64, photoNumber) => {
+    try {
+      if (!window.gapi.client.drive) {
+        await window.gapi.client.load('drive', 'v3');
+      }
+
+      // Zamień base64 na Blob
+      const byteCharacters = atob(photoBase64.split(',')[1]);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'image/jpeg' });
+
+      // Sprawdź czy folder zamówienia istnieje
+      let folderResponse = await window.gapi.client.drive.files.list({
+        q: `name='${orderId}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '${GOOGLE_CONFIG.PARENT_FOLDER_ID}' in parents`,
+        spaces: 'drive',
+        pageSize: 1
+      });
+
+      let folderId = null;
+      if (folderResponse.result.files.length > 0) {
+        folderId = folderResponse.result.files[0].id;
+      } else {
+        // Utwórz folder dla tego zamówienia
+        const createFolderResponse = await window.gapi.client.drive.files.create({
+          resource: {
+            name: orderId,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [GOOGLE_CONFIG.PARENT_FOLDER_ID]
+          },
+          fields: 'id'
+        });
+        folderId = createFolderResponse.result.id;
+      }
+
+      // Upload zdjęcia
+      const fileName = `${orderId}_${photoNumber}.jpg`;
+      const metadata = {
+        name: fileName,
+        mimeType: 'image/jpeg',
+        parents: [folderId]
+      };
+
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.append('file', blob);
+
+      const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${window.gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().id_token}`
+        },
+        body: form
+      });
+
+      if (!response.ok) {
+        throw new Error('Upload failed');
+      }
+
+      return true;
+    } catch (err) {
+      console.error('Google Drive upload error:', err);
+      alert('Błąd uploadu na Google Drive: ' + err.message);
+      return false;
+    }
+  };
+
+  const handleStartWarehousePhoto = (orderId) => {
+    setPhotoSession({
+      orderId,
+      photos: [],
+      currentPhoto: null
+    });
+  };
+
+  const handleTakeWarehousePhoto = async () => {
+    if (!canvasRef.current || !videoRef.current || !photoSession) return;
+
+    try {
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
+      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.3);
+
+      setIsLoading(true);
+      const photoNumber = photoSession.photos.length + 1;
+      
+      const success = await uploadPhotoToGoogleDrive(photoSession.orderId, photoBase64, photoNumber);
+      
+      if (success) {
+        setPhotoSession({
+          ...photoSession,
+          photos: [...photoSession.photos, photoBase64],
+          currentPhoto: photoBase64
+        });
+      }
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd wykonania zdjęcia');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleArchiveOrder = async () => {
+    if (!photoSession) return;
+
+    try {
+      setIsLoading(true);
+      const order = orders.find(o => o.id === photoSession.orderId);
+      if (!order) return;
+
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, {
+        status: 'archived',
+        warehousePhotos: photoSession.photos.length,
+        history: [...order.history, {
+          timestamp: new Date().toLocaleString('pl-PL'),
+          user: currentUser?.name || 'Unknown',
+          action: `Zarchiwizowano - ${photoSession.photos.length} zdjęć na Google Drive`
+        }]
+      });
+
+      alert(`✅ Zamówienie ${photoSession.orderId} zarchiwizowane! ${photoSession.photos.length} zdjęć zostało zapisane na Google Drive.`);
+      
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+      
+      setPhotoSession(null);
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd archiwizacji zamówienia');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleAddUser = async () => {
     if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
       alert('Wypełnij wszystkie pola');
@@ -482,8 +673,10 @@ export default function ProductionSystem() {
       return ['orders'];
     } else if (currentUser.role === 'order_admin') {
       return ['orders', 'ready', 'pallet', 'dedicated'];
+    } else if (currentUser.role === 'warehouse') {
+      return ['photos'];
     } else if (currentUser.role === 'admin') {
-      return ['orders', 'ready', 'pallet', 'dedicated', 'archive'];
+      return ['orders', 'ready', 'pallet', 'dedicated', 'archive', 'photos'];
     }
     return [];
   };
@@ -514,7 +707,6 @@ export default function ProductionSystem() {
         .stat-number { font-size: 20px; font-weight: bold; }
         .stat-label { font-size: 11px; color: #666; margin-top: 4px; }
         .warning-box { background: #fff3cd; border-left: 3px solid #ff9800; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
-        .success-box { background: #d4edda; border-left: 3px solid #4CAF50; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; background: white; padding: 1rem; border-radius: 8px; border: 1px solid #ddd; }
         .photo-preview { max-width: 100%; max-height: 200px; border-radius: 4px; margin-top: 8px; }
         .video-container { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
@@ -532,6 +724,7 @@ export default function ProductionSystem() {
         .modal-buttons { display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem; }
         .button-group { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
         .sync-badge { display: inline-block; padding: 4px 8px; background: #4CAF50; color: white; border-radius: 4px; font-size: 10px; margin-left: 0.5rem; }
+        .photo-counter { display: inline-block; padding: 6px 12px; background: #2196F3; color: white; border-radius: 4px; font-weight: bold; margin-top: 0.5rem; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
@@ -550,8 +743,10 @@ export default function ProductionSystem() {
             <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleLogin} disabled={isLoading}>
               {isLoading ? '⏳ Zalogowanie...' : 'Zaloguj się'}
             </button>
-            <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo: op1@company.com / 1234</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ Dane synchronizowane z Firebase</p>
+            <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo:</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>op1@company.com / 1234 (Operator)</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>mag@company.com / 1234 (Magazynowy)</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ Google Drive + Firebase</p>
           </div>
         </div>
       )}
@@ -597,24 +792,26 @@ export default function ProductionSystem() {
             </div>
           </div>
 
-          <div className="stats">
-            <div className="stat-box">
-              <div className="stat-number">{inProgressOrders.length}</div>
-              <div className="stat-label">W trakcie</div>
+          {currentUser.role !== 'warehouse' && (
+            <div className="stats">
+              <div className="stat-box">
+                <div className="stat-number">{inProgressOrders.length}</div>
+                <div className="stat-label">W trakcie</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-number" style={{ color: '#ff9800' }}>{unrepairedCount}</div>
+                <div className="stat-label">Do naprawy</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-number" style={{ color: '#17a2b8' }}>{readyOrders.length}</div>
+                <div className="stat-label">Gotowe</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-number" style={{ color: '#4CAF50' }}>{archivedOrders.length}</div>
+                <div className="stat-label">Archiwum</div>
+              </div>
             </div>
-            <div className="stat-box">
-              <div className="stat-number" style={{ color: '#ff9800' }}>{unrepairedCount}</div>
-              <div className="stat-label">Do naprawy</div>
-            </div>
-            <div className="stat-box">
-              <div className="stat-number" style={{ color: '#17a2b8' }}>{readyOrders.length}</div>
-              <div className="stat-label">Gotowe</div>
-            </div>
-            <div className="stat-box">
-              <div className="stat-number" style={{ color: '#4CAF50' }}>{archivedOrders.length}</div>
-              <div className="stat-label">Archiwum</div>
-            </div>
-          </div>
+          )}
 
           <div className="tabs">
             {visibleTabs.includes('orders') && (
@@ -628,6 +825,9 @@ export default function ProductionSystem() {
             )}
             {visibleTabs.includes('dedicated') && (
               <button className={`tab-btn ${activeTab === 'dedicated' ? 'active' : ''}`} onClick={() => setActiveTab('dedicated')}>📦 Dedykowana</button>
+            )}
+            {visibleTabs.includes('photos') && (
+              <button className={`tab-btn ${activeTab === 'photos' ? 'active' : ''}`} onClick={() => setActiveTab('photos')}>📸 Zdjęcia</button>
             )}
             {visibleTabs.includes('archive') && (
               <button className={`tab-btn ${activeTab === 'archive' ? 'active' : ''}`} onClick={() => setActiveTab('archive')}>📂 Archiwum</button>
@@ -841,6 +1041,100 @@ export default function ProductionSystem() {
             </div>
           )}
 
+          {activeTab === 'photos' && (
+            <div>
+              <h2>📸 Zdjęcia zamówień ({readyOrders.length})</h2>
+              {!photoSession ? (
+                <>
+                  {readyOrders.length === 0 ? (
+                    <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień do sfotografowania</div>
+                  ) : (
+                    readyOrders.map(order => (
+                      <div key={order.id} className="card">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div>
+                            <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                            <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
+                          </div>
+                          <button className="btn btn-success" onClick={() => handleStartWarehousePhoto(order.id)} disabled={isLoading}>📸 Wykonaj zdjęcia</button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </>
+              ) : (
+                <div className="card">
+                  <h3 style={{ marginBottom: '1rem' }}>Fotografowanie zamówienia #{photoSession.orderId}</h3>
+                  
+                  <div className="video-container">
+                    <video ref={videoRef} autoPlay playsInline></video>
+                    <canvas ref={canvasRef} width={640} height={480}></canvas>
+                  </div>
+
+                  {!videoRef.current?.srcObject ? (
+                    <button className="btn btn-primary" onClick={handleStartCamera} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>
+                      📷 Włącz kamerę
+                    </button>
+                  ) : (
+                    <button className="btn btn-success" onClick={handleTakeWarehousePhoto} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>
+                      {isLoading ? '⏳ Uploadowanie...' : '📸 Zrób zdjęcie'}
+                    </button>
+                  )}
+
+                  <div className="photo-counter">
+                    Zdjęcia: {photoSession.photos.length}/3
+                  </div>
+
+                  {photoSession.photos.length > 0 && (
+                    <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
+                      <p style={{ fontSize: '12px', fontWeight: 'bold' }}>Wykonane zdjęcia:</p>
+                      {photoSession.photos.map((photo, idx) => (
+                        <div key={idx} style={{ marginBottom: '0.5rem', fontSize: '12px', color: '#666' }}>
+                          ✓ {photoSession.orderId}_{idx + 1}.jpg
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {photoSession.photos.length >= 3 && (
+                    <button 
+                      className="btn btn-success" 
+                      onClick={handleArchiveOrder}
+                      disabled={isLoading}
+                      style={{ width: '100%', marginTop: '1rem' }}
+                    >
+                      {isLoading ? '⏳ Archiwizuję...' : '✓ Zarchiwizuj zamówienie'}
+                    </button>
+                  )}
+
+                  {photoSession.photos.length < 3 && (
+                    <div className="warning-box" style={{ marginTop: '1rem' }}>
+                      ⚠️ Potrzebujesz jeszcze {3 - photoSession.photos.length} zdjęcia(ć)
+                    </div>
+                  )}
+
+                  <button 
+                    className="btn btn-danger" 
+                    onClick={() => {
+                      if (streamRef.current) {
+                        streamRef.current.getTracks().forEach(track => track.stop());
+                        streamRef.current = null;
+                      }
+                      if (videoRef.current) {
+                        videoRef.current.srcObject = null;
+                      }
+                      setPhotoSession(null);
+                    }}
+                    style={{ width: '100%', marginTop: '1rem' }}
+                    disabled={isLoading}
+                  >
+                    ↶ Anuluj
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'archive' && (
             <div>
               <h2>Zarchiwizowane zamówienia ({archivedOrders.length})</h2>
@@ -848,45 +1142,14 @@ export default function ProductionSystem() {
                 <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zarchiwizowanych zamówień</div>
               ) : (
                 archivedOrders.map(order => (
-                  <div key={order.id} className="order-card" onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                  <div key={order.id} className="card">
                     <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
                     <div style={{ fontSize: '12px', color: '#666', marginBottom: '6px' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</div>
-                    {order.problems && order.problems.length > 0 && (
-                      <div style={{ fontSize: '11px', color: '#666' }}>Naprawianych elementów: {order.problems.length}</div>
+                    {order.warehousePhotos && (
+                      <div style={{ fontSize: '11px', color: '#4CAF50' }}>📸 {order.warehousePhotos} zdjęć na Google Drive</div>
                     )}
                   </div>
                 ))
-              )}
-
-              {selectedOrderId && selectedOrder && selectedOrder.status === 'archived' && (
-                <div className="card" style={{ marginTop: '1.5rem' }}>
-                  <h3 style={{ marginBottom: '1rem' }}>Szczegóły zamówienia #{selectedOrder.id}</h3>
-                  
-                  {selectedOrder.problems && selectedOrder.problems.length > 0 && (
-                    <div style={{ marginBottom: '1.5rem' }}>
-                      <h4 style={{ marginBottom: '0.75rem' }}>Naprawiane elementy:</h4>
-                      {selectedOrder.problems.map(p => (
-                        <div key={p.id} className="problem-row">
-                          {p.photoURL && (
-                            <img src={p.photoURL} className="photo-preview" alt="Problem" />
-                          )}
-                          <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
-                          <p style={{ margin: '0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <h4 style={{ marginBottom: '0.75rem' }}>Historia:</h4>
-                  <div style={{ background: '#f9f9f9', padding: '0.75rem', borderRadius: '4px', fontSize: '12px' }}>
-                    {(selectedOrder.history || []).map((h, i) => (
-                      <div key={i} style={{ paddingBottom: '0.5rem', borderBottom: '1px solid #ddd' }}>
-                        <strong>{h.user}</strong> - {h.action}<br />
-                        <span style={{ fontSize: '11px', color: '#999' }}>{h.timestamp}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               )}
             </div>
           )}
@@ -934,6 +1197,7 @@ export default function ProductionSystem() {
                   <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} disabled={isLoading}>
                     <option value="operator">Operator</option>
                     <option value="order_admin">Admin Jakości</option>
+                    <option value="warehouse">Magazynowy</option>
                     <option value="admin">Administrator</option>
                   </select>
                 </div>
@@ -945,7 +1209,9 @@ export default function ProductionSystem() {
                     <div className="user-info">
                       <div style={{ fontWeight: 'bold' }}>{u.name}</div>
                       <div style={{ fontSize: '12px', color: '#666' }}>{u.email}</div>
-                      <span className="user-role">{u.role === 'order_admin' ? 'Admin Jakości' : u.role === 'admin' ? 'Administrator' : 'Operator'}</span>
+                      <span className="user-role">
+                        {u.role === 'order_admin' ? 'Admin Jakości' : u.role === 'warehouse' ? 'Magazynowy' : u.role === 'admin' ? 'Administrator' : 'Operator'}
+                      </span>
                     </div>
                     {u.id !== currentUser.uid && (
                       <button className="btn btn-danger" onClick={() => handleDeleteUser(u.id)} disabled={isLoading}>Usuń</button>
