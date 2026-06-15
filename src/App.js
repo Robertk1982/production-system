@@ -30,11 +30,11 @@ const compressImage = (file) => {
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+        const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
         canvas.width = img.width * scale;
         canvas.height = img.height * scale;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.4));
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
       };
     };
   });
@@ -583,11 +583,11 @@ export default function ProductionSystem() {
 
     try {
       const ctx = canvasRef.current.getContext('2d');
-      const scale = Math.min(1, 800 / Math.max(videoRef.current.videoWidth, videoRef.current.videoHeight));
+      const scale = Math.min(1, 1600 / Math.max(videoRef.current.videoWidth, videoRef.current.videoHeight));
       canvasRef.current.width = videoRef.current.videoWidth * scale;
       canvasRef.current.height = videoRef.current.videoHeight * scale;
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.4);
+      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.7);
 
       setIsLoading(true);
       const photoNumber = photoSession.photos.length + 1;
@@ -595,11 +595,12 @@ export default function ProductionSystem() {
       const success = await uploadPhotoToGoogleDrive(photoSession.orderId, photoBase64, photoNumber);
       
       if (success) {
-        setPhotoSession(prev => ({
-          ...prev,
-          photos: [...prev.photos, photoBase64],
+        const newPhotos = [...photoSession.photos, photoBase64];
+        setPhotoSession({
+          orderId: photoSession.orderId,
+          photos: newPhotos,
           currentPhoto: photoBase64
-        }));
+        });
       }
     } catch (err) {
       console.error('Błąd:', err);
@@ -620,11 +621,12 @@ export default function ProductionSystem() {
         const success = await uploadPhotoToGoogleDrive(photoSession.orderId, compressedBase64, photoNumber);
         
         if (success) {
-          setPhotoSession(prev => ({
-            ...prev,
-            photos: [...prev.photos, compressedBase64],
+          const newPhotos = [...photoSession.photos, compressedBase64];
+          setPhotoSession({
+            orderId: photoSession.orderId,
+            photos: newPhotos,
             currentPhoto: compressedBase64
-          }));
+          });
         }
       } catch (err) {
         console.error('Błąd:', err);
