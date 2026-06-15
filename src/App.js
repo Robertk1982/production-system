@@ -11,12 +11,15 @@ const FIREBASE_CONFIG = {
   appId: "1:340231895219:web:50fc85275a51d2114998c6"
 };
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://production-system-lake.vercel.app/api';
+const GOOGLE_CONFIG = {
+  CLIENT_ID: '736317012952-856e5b7qsgqq346845eb7kgu4qokq49d.apps.googleusercontent.com',
+  PARENT_FOLDER_ID: '1R8zz1X_qmRDMM3X82jI_0lhDLF6qEpTe',
+  SCOPES: 'https://www.googleapis.com/auth/drive'
+};
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 
-// SUPER KOMPRESJA - max 200-300kb
 const compressImage = (file) => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -40,6 +43,8 @@ const compressImage = (file) => {
 export default function ProductionSystem() {
   const [appState, setAppState] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
+  const [accessToken, setAccessToken] = useState(null);
+  const [googleReady, setGoogleReady] = useState(false);
   const [loginEmail, setLoginEmail] = useState('op1@company.com');
   const [loginPassword, setLoginPassword] = useState('1234');
   
@@ -68,6 +73,32 @@ export default function ProductionSystem() {
   const fileInputRef = useRef(null);
   const warehouseFileInputRef = useRef(null);
   const streamRef = useRef(null);
+  const tokenClientRef = useRef(null);
+
+  // Inicjalizuj Google Identity Services
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      setGoogleReady(true);
+      // Spróbuj załadować token z localStorage
+      const savedToken = localStorage.getItem('google_access_token');
+      const tokenTime = localStorage.getItem('google_token_time');
+      if (savedToken && tokenTime) {
+        const now = Date.now();
+        const age = now - parseInt(tokenTime);
+        if (age < 3600000) { // Token ważny przez 1 godzinę
+          setAccessToken(savedToken);
+        } else {
+          localStorage.removeItem('google_access_token');
+          localStorage.removeItem('google_token_time');
+        }
+      }
+    };
+    document.body.appendChild(script);
+  }, []);
 
   // Załaduj użytkowników
   useEffect(() => {
@@ -123,7 +154,6 @@ export default function ProductionSystem() {
     cleanupArchived();
   }, [orders]);
 
-  // CZYŚĆ STATE i WYŁĄCZ KAMERĘ
   useEffect(() => {
     if (selectedOrderId === null) {
       setIssueDesc('');
@@ -145,6 +175,9 @@ export default function ProductionSystem() {
 
   const handleLogout = () => {
     stopCamera();
+    setAccessToken(null);
+    localStorage.removeItem('google_access_token');
+    localStorage.removeItem('google_token_time');
     setCurrentUser(null);
     setAppState('login');
     setSelectedOrderId(null);
@@ -168,6 +201,38 @@ export default function ProductionSystem() {
       alert('Błędny email lub hasło');
     }
   };
+
+  const handleAuthorizeGoogle = useCallback(() => {
+    if (!googleReady || !window.google) {
+      alert('Google API się ładuje. Poczekaj chwilę.');
+      return;
+    }
+
+    try {
+      tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CONFIG.CLIENT_ID,
+        scope: GOOGLE_CONFIG.SCOPES,
+        callback: (tokenResponse) => {
+          if (tokenResponse && tokenResponse.access_token) {
+            setAccessToken(tokenResponse.access_token);
+            // Zapisz token w localStorage
+            localStorage.setItem('google_access_token', tokenResponse.access_token);
+            localStorage.setItem('google_token_time', Date.now().toString());
+            alert('✅ Autoryzacja powiodła się!');
+          }
+        },
+        error_callback: (error) => {
+          console.error('Google auth error:', error);
+          alert('❌ Błąd autoryzacji: ' + (error.message || JSON.stringify(error)));
+        }
+      });
+
+      tokenClientRef.current.requestAccessToken();
+    } catch (err) {
+      console.error('Google auth error:', err);
+      alert('Błąd autoryzacji: ' + err.message);
+    }
+  }, [googleReady]);
 
   const handleStartOrder = async () => {
     if (!newOrderNum.trim()) {
@@ -344,7 +409,7 @@ export default function ProductionSystem() {
         history: [...order.history, {
           timestamp: new Date().toLocaleString('pl-PL'),
           user: currentUser?.name || 'Unknown',
-          action: 'Zamówienie zakończone - oczekuje na wybór typu'
+          action: 'Zamówienie zakończone'
         }]
       });
 
@@ -362,8 +427,8 @@ export default function ProductionSystem() {
       orderId,
       type,
       message: type === 'pallet' 
-        ? 'Czy zmieniłeś status na dostawa paletowa - Odpowiedz na wiadomość?'
-        : 'Czy zmieniłeś status na dostawa dedykowana o krok. Produkcja zakończona sukcesem?'
+        ? 'Czy zmieniłeś status na dostawa paletowa?'
+        : 'Czy zmieniłeś status na dostawa dedykowana?'
     });
   };
 
@@ -382,14 +447,12 @@ export default function ProductionSystem() {
           history: [...order.history, {
             timestamp: new Date().toLocaleString('pl-PL'),
             user: currentUser?.name || 'Unknown',
-            action: `Przeniesiono do: ${moveConfirmModal.type === 'pallet' ? 'Paletowy' : 'Dedykowana'}`
+            action: `Przeniesiono do: ${moveConfirmModal.type}`
           }]
         });
 
-        alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${order.id} zostało całkowicie wyprodukowane!"`);
+        alert(`✅ Zamówienie ${order.id} przeniesione!`);
         setSelectedOrderId(null);
-      } else {
-        alert('Zamówienie pozostaje w folderze Gotowe - zmień status w Prestashop i wykonaj operację ponownie');
       }
     } catch (err) {
       console.error('Błąd:', err);
@@ -426,30 +489,87 @@ export default function ProductionSystem() {
     setConfirmModal(null);
   };
 
-  // UPLOAD PRZEZ API - WSZYSCY MOGĄ!
+  // Google Drive upload
   const uploadPhotoToGoogleDrive = async (orderId, photoBase64, photoNumber) => {
+    if (!accessToken) {
+      alert('❌ Najpierw autoryzuj dostęp do Google Drive!');
+      return false;
+    }
+
     try {
-      const response = await fetch(`${API_URL}/upload`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId, photoBase64, photoNumber })
-      });
+      const byteCharacters = atob(photoBase64.split(',')[1]);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'image/jpeg' });
 
-      const data = await response.json();
+      // Szukaj folderu
+      const searchResponse = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '${GOOGLE_CONFIG.PARENT_FOLDER_ID}' in parents&spaces=drive&pageSize=1`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
 
-      if (!response.ok) {
-        throw new Error(data.error || `Upload failed: ${response.status}`);
+      if (!searchResponse.ok) throw new Error('Search failed');
+
+      const searchData = await searchResponse.json();
+      let folderId;
+
+      if (searchData.files && searchData.files.length > 0) {
+        folderId = searchData.files[0].id;
+      } else {
+        const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: orderId,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [GOOGLE_CONFIG.PARENT_FOLDER_ID]
+          })
+        });
+
+        if (!createResponse.ok) throw new Error('Folder creation failed');
+        const folderData = await createResponse.json();
+        folderId = folderData.id;
       }
 
+      // Upload zdjęcia
+      const fileName = `${orderId}_${photoNumber}.jpg`;
+      const metadata = {
+        name: fileName,
+        mimeType: 'image/jpeg',
+        parents: [folderId]
+      };
+
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.append('file', blob);
+
+      const uploadResponse = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form
+      });
+
+      if (!uploadResponse.ok) throw new Error(`Upload failed: ${uploadResponse.status}`);
       return true;
     } catch (err) {
       console.error('Upload error:', err);
-      alert('❌ Błąd uploadu: ' + err.message);
+      alert('Błąd uploadu: ' + err.message);
       return false;
     }
   };
 
   const handleStartWarehousePhoto = (orderId) => {
+    if (!accessToken) {
+      alert('⚠️ Najpierw kliknij "Autoryzuj Google Drive"!');
+      return;
+    }
+
     setPhotoSession({
       orderId,
       photos: [],
@@ -535,7 +655,7 @@ export default function ProductionSystem() {
         }]
       });
 
-      alert(`✅ Zamówienie ${photoSession.orderId} zarchiwizowane!\n${photoSession.photos.length} zdjęć na Google Drive.`);
+      alert(`✅ Zamówienie ${photoSession.orderId} zarchiwizowane!`);
       
       stopCamera();
       setPhotoSession(null);
@@ -630,6 +750,7 @@ export default function ProductionSystem() {
         .btn-success { border-color: #4CAF50; color: #4CAF50; }
         .btn-danger { border-color: #f44336; color: #f44336; }
         .btn-primary { border-color: #2196F3; color: #2196F3; }
+        .btn-warning { border-color: #ff9800; color: #ff9800; }
         .form-group { margin-bottom: 1rem; }
         .form-group label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 6px; }
         .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
@@ -669,7 +790,7 @@ export default function ProductionSystem() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>🏭 System Zamówień<span className="sync-badge">☁️ V13</span></h1>
+            <h1 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>🏭 System Zamówień<span className="sync-badge">V14</span></h1>
             <div className="form-group">
               <label>Email</label>
               <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="op1@company.com" />
@@ -679,12 +800,9 @@ export default function ProductionSystem() {
               <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="1234" />
             </div>
             <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleLogin} disabled={isLoading}>
-              {isLoading ? '⏳ Zalogowanie...' : 'Zaloguj się'}
+              {isLoading ? '⏳' : '✓'} Zaloguj się
             </button>
-            <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo:</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>op1@company.com / 1234 (Operator)</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>admin@company.com / 1234 (Admin)</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ Backend API + Service Account</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '1rem' }}>✓ OAuth + Token Persistence</p>
           </div>
         </div>
       )}
@@ -693,7 +811,7 @@ export default function ProductionSystem() {
         <div className="modal">
           <div className="modal-content">
             <h2>Potwierdzenie</h2>
-            <p style={{ marginTop: '1rem', marginBottom: '1rem' }}>Czy napewno chcesz cofnąć zamówienie do folderu Gotowe?</p>
+            <p style={{ marginTop: '1rem', marginBottom: '1rem' }}>Czy napewno chcesz cofnąć?</p>
             <div className="modal-buttons">
               <button className="btn btn-success" onClick={handleConfirmRevert} disabled={isLoading}>Tak</button>
               <button className="btn btn-danger" onClick={() => setConfirmModal(null)} disabled={isLoading}>Nie</button>
@@ -721,13 +839,13 @@ export default function ProductionSystem() {
             <div>
               <h1 style={{ margin: '0 0 4px 0' }}>🏭 System Zamówień</h1>
               <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>
-                Zalogowany: {currentUser.name} ({currentUser.role})
-                <span className="sync-badge">✓ API Ready</span>
+                {currentUser.name} ({currentUser.role})
+                {accessToken && <span style={{ marginLeft: '8px', color: '#4CAF50' }}>✓ Autoryzowany</span>}
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
               {currentUser.role === 'admin' && (
-                <button className="btn btn-primary" onClick={() => { setActiveTab('settings'); setAppState('settings'); }}>⚙️ Ustawienia</button>
+                <button className="btn btn-primary" onClick={() => { setActiveTab('settings'); setAppState('settings'); }}>⚙️</button>
               )}
               <button className="btn btn-danger" onClick={handleLogout}>Wyloguj</button>
             </div>
@@ -780,56 +898,46 @@ export default function ProductionSystem() {
               <div>
                 {currentUser.role === 'operator' && (
                   <>
-                    <h3 style={{ marginBottom: '1rem' }}>+ Nowe zamówienie</h3>
+                    <h3 style={{ marginBottom: '1rem' }}>+ Nowe</h3>
                     <div className="card">
                       <div className="form-group">
                         <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
                       </div>
-                      <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading} style={{ width: '100%' }}>
-                        {isLoading ? '⏳' : '✓'} Rozpocznij
-                      </button>
+                      <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading} style={{ width: '100%' }}>Rozpocznij</button>
                     </div>
                   </>
                 )}
 
-                <h3 style={{ marginBottom: '1rem' }}>Zamówienia ({inProgressOrders.length})</h3>
-                {inProgressOrders.length === 0 ? (
-                  <p style={{ textAlign: 'center', color: '#999' }}>Brak aktywnych zamówień</p>
-                ) : (
-                  inProgressOrders.map(order => {
-                    const unrepairedProblems = (order.problems || []).filter(p => !(p.cut && p.repaired));
-                    return (
-                      <div key={order.docId} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
-                        <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
-                        <div style={{ fontSize: '12px', color: '#666', marginBottom: '6px' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</div>
-                        {unrepairedProblems.length > 0 && (
-                          <div style={{ fontSize: '11px', color: '#ff9800' }}>⚠️ {unrepairedProblems.length} błędy</div>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
+                <h3>Zamówienia ({inProgressOrders.length})</h3>
+                {inProgressOrders.map(order => {
+                  const unrepairedProblems = (order.problems || []).filter(p => !(p.cut && p.repaired));
+                  return (
+                    <div key={order.docId} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                      <div style={{ fontWeight: 'bold' }}>#{order.id}</div>
+                      {unrepairedProblems.length > 0 && (
+                        <div style={{ fontSize: '11px', color: '#ff9800' }}>⚠️ {unrepairedProblems.length} błędy</div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {selectedOrder && selectedOrder.status === 'in_progress' && (
                 <div>
                   <div className="card">
-                    <h3 style={{ marginBottom: '1rem' }}>Zamówienie #{selectedOrder.id}</h3>
+                    <h3>#{selectedOrder.id}</h3>
 
                     {selectedOrder.problems && selectedOrder.problems.length > 0 && (
                       <div style={{ marginBottom: '1.5rem' }}>
-                        <h4 style={{ marginBottom: '0.75rem' }}>Błędy:</h4>
+                        <h4>Błędy:</h4>
                         {selectedOrder.problems.map(p => (
                           <div key={p.id} className="problem-row">
-                            {p.photoURL && (
-                              <img src={p.photoURL} className="photo-preview" alt="Problem" />
-                            )}
+                            {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem" />}
                             <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
-                            <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
                             <div className="checkbox-group">
                               <label>
                                 <input type="checkbox" checked={p.cut || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} disabled={isLoading} />
-                                Wycięty element
+                                Wycięty
                               </label>
                               <label>
                                 <input type="checkbox" checked={p.repaired || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} disabled={isLoading} />
@@ -843,16 +951,15 @@ export default function ProductionSystem() {
 
                     {currentUser.role === 'operator' && (
                       <>
-                        <h4 style={{ marginBottom: '0.75rem' }}>Dodaj błąd</h4>
-                        
+                        <h4>Dodaj błąd</h4>
                         <div className="form-group">
-                          <label>Zdjęcie (z kamery lub plik)</label>
+                          <label>Zdjęcie</label>
                           <div style={{ marginBottom: '1rem' }}>
-                            <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }} disabled={isLoading}>📷 Włącz kamerę</button>
-                            <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Prześlij plik</button>
+                            <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }} disabled={isLoading}>📷 Kamera</button>
+                            <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Plik</button>
                             <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} disabled={isLoading} />
                           </div>
-                          {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
+                          {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue" />}
                         </div>
 
                         {cameraActive && (
@@ -863,39 +970,20 @@ export default function ProductionSystem() {
                         )}
 
                         {cameraActive && (
-                          <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem', width: '100%' }} disabled={isLoading}>📸 Zrób zdjęcie</button>
+                          <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem', width: '100%' }} disabled={isLoading}>Zrób zdjęcie</button>
                         )}
 
                         <div className="form-group">
-                          <label>Opis problemu</label>
                           <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..." disabled={isLoading}></textarea>
                         </div>
 
-                        <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading} style={{ width: '100%' }}>
-                          {isLoading ? '⏳ Dodawanie...' : '✓ Dodaj błąd'}
-                        </button>
-
-                        {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length > 0 && (
-                          <div className="warning-box">⚠️ Czekasz na naprawę {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
-                        )}
+                        <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading} style={{ width: '100%' }}>Dodaj błąd</button>
 
                         {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length === 0 && (
-                          <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading}>
-                            {isLoading ? '⏳ Kończę...' : '✓ Zlecenie zakończone'}
-                          </button>
+                          <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading}>Zlecenie zakończone</button>
                         )}
                       </>
                     )}
-
-                    <h4 style={{ marginTop: '1.5rem', marginBottom: '0.75rem' }}>Historia</h4>
-                    <div style={{ background: '#f9f9f9', padding: '0.75rem', borderRadius: '4px', fontSize: '12px', maxHeight: '200px', overflowY: 'auto' }}>
-                      {(selectedOrder.history || []).map((h, i) => (
-                        <div key={i} style={{ paddingBottom: '0.5rem', borderBottom: '1px solid #ddd' }}>
-                          <strong>{h.user}</strong> - {h.action}<br />
-                          <span style={{ fontSize: '11px', color: '#999' }}>{h.timestamp}</span>
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 </div>
               )}
@@ -904,94 +992,77 @@ export default function ProductionSystem() {
 
           {activeTab === 'ready' && (
             <div>
-              <h2>Gotowe zamówienia ({readyOrders.length})</h2>
-              {readyOrders.length === 0 ? (
-                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak gotowych zamówień</div>
-              ) : (
-                readyOrders.map(order => (
-                  <div key={order.docId} className="card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                      <div>
-                        <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</p>
-                      </div>
-                    </div>
-                    <div className="button-group">
-                      <button className="btn btn-primary" onClick={() => handleMoveOrderClick(order.id, 'pallet')} disabled={isLoading}>🎨 Paletowy</button>
-                      <button className="btn btn-primary" onClick={() => handleMoveOrderClick(order.id, 'dedicated')} disabled={isLoading}>📦 Dedykowana</button>
-                    </div>
+              <h2>Gotowe ({readyOrders.length})</h2>
+              {readyOrders.map(order => (
+                <div key={order.docId} className="card">
+                  <h3 style={{ margin: '0 0 1rem 0' }}>#{order.id}</h3>
+                  <div className="button-group">
+                    <button className="btn btn-primary" onClick={() => handleMoveOrderClick(order.id, 'pallet')} disabled={isLoading}>🎨 Paletowy</button>
+                    <button className="btn btn-primary" onClick={() => handleMoveOrderClick(order.id, 'dedicated')} disabled={isLoading}>📦 Dedykowana</button>
                   </div>
-                ))
-              )}
+                </div>
+              ))}
             </div>
           )}
 
           {activeTab === 'pallet' && (
             <div>
               <h2>Paletowy ({palletOrders.length})</h2>
-              {palletOrders.length === 0 ? (
-                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień</div>
-              ) : (
-                palletOrders.map(order => (
-                  <div key={order.docId} className="card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                      </div>
-                      <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
-                    </div>
+              {palletOrders.map(order => (
+                <div key={order.docId} className="card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                    <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                   </div>
-                ))
-              )}
+                </div>
+              ))}
             </div>
           )}
 
           {activeTab === 'dedicated' && (
             <div>
               <h2>Dedykowana ({dedicatedOrders.length})</h2>
-              {dedicatedOrders.length === 0 ? (
-                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień</div>
-              ) : (
-                dedicatedOrders.map(order => (
-                  <div key={order.docId} className="card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                      </div>
-                      <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
-                    </div>
+              {dedicatedOrders.map(order => (
+                <div key={order.docId} className="card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                    <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                   </div>
-                ))
-              )}
+                </div>
+              ))}
             </div>
           )}
 
           {activeTab === 'photos' && (
             <div>
-              <h2>📸 Zdjęcia zamówień ({readyOrders.length})</h2>
-              <div className="success-box">✅ Wszyscy mogą uploadować - bez Google Auth!</div>
+              <h2>📸 Zdjęcia ({readyOrders.length})</h2>
+              
+              {!accessToken && (
+                <div className="card" style={{ background: '#fff3cd', borderLeft: '3px solid #ff9800' }}>
+                  <p style={{ margin: '0 0 1rem 0' }}>Aby uploadować na Google Drive, najpierw autoryzuj dostęp.</p>
+                  <button className="btn btn-warning" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ width: '100%', padding: '12px' }}>
+                    {isLoading ? '⏳' : '🔐'} Autoryzuj Google Drive
+                  </button>
+                </div>
+              )}
 
-              {!photoSession ? (
+              {accessToken && !photoSession && (
                 <>
-                  {readyOrders.length === 0 ? (
-                    <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień do sfotografowania</div>
-                  ) : (
-                    readyOrders.map(order => (
-                      <div key={order.docId} className="card">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                            <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</p>
-                          </div>
-                          <button className="btn btn-success" onClick={() => handleStartWarehousePhoto(order.id)} disabled={isLoading}>📸 Wykonaj zdjęcia</button>
-                        </div>
+                  <div className="success-box">✅ Google Drive autoryzowany!</div>
+                  {readyOrders.map(order => (
+                    <div key={order.docId} className="card">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                        <button className="btn btn-success" onClick={() => handleStartWarehousePhoto(order.id)} disabled={isLoading}>📸 Zdjęcia</button>
                       </div>
-                    ))
-                  )}
+                    </div>
+                  ))}
                 </>
-              ) : (
+              )}
+
+              {accessToken && photoSession && (
                 <div className="card">
-                  <h3 style={{ marginBottom: '1rem' }}>Fotografowanie zamówienia #{photoSession.orderId}</h3>
+                  <h3>#{photoSession.orderId}</h3>
                   
                   <div className="video-container">
                     <video ref={videoRef} autoPlay playsInline></video>
@@ -999,64 +1070,42 @@ export default function ProductionSystem() {
                   </div>
 
                   {!cameraActive ? (
-                    <button className="btn btn-primary" onClick={handleStartCamera} style={{ width: '100%', marginBottom: '1rem', padding: '12px', fontSize: '15px' }} disabled={isLoading}>
-                      📷 Włącz kamerę
-                    </button>
+                    <button className="btn btn-primary" onClick={handleStartCamera} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>📷 Włącz kamerę</button>
                   ) : (
-                    <button className="btn btn-success" onClick={handleTakeWarehousePhoto} style={{ width: '100%', marginBottom: '1rem', padding: '12px', fontSize: '15px' }} disabled={isLoading}>
-                      {isLoading ? '⏳ Upload...' : '📸 Zrób zdjęcie'}
+                    <button className="btn btn-success" onClick={handleTakeWarehousePhoto} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>
+                      {isLoading ? '⏳' : '📸'} Zrób zdjęcie
                     </button>
                   )}
 
-                  <div style={{ marginBottom: '1rem' }}>
-                    <button className="btn btn-primary" onClick={() => warehouseFileInputRef.current?.click()} style={{ width: '100%', padding: '12px', fontSize: '15px' }} disabled={isLoading}>
-                      {isLoading ? '⏳ Upload...' : '📤 Dodaj z dysku'}
-                    </button>
-                    <input ref={warehouseFileInputRef} type="file" accept="image/*" onChange={handleWarehouseFileChange} style={{ display: 'none' }} disabled={isLoading} />
-                  </div>
+                  <button className="btn btn-primary" onClick={() => warehouseFileInputRef.current?.click()} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>
+                    📤 Z dysku
+                  </button>
+                  <input ref={warehouseFileInputRef} type="file" accept="image/*" onChange={handleWarehouseFileChange} style={{ display: 'none' }} disabled={isLoading} />
 
                   <div className="photo-counter">
-                    Zdjęcia: {photoSession.photos.length} / min. 3
+                    {photoSession.photos.length} / 3
                   </div>
 
                   {photoSession.photos.length > 0 && (
                     <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
-                      <p style={{ fontSize: '12px', fontWeight: 'bold' }}>✅ Wysłane:</p>
                       {photoSession.photos.map((_, idx) => (
-                        <div key={idx} style={{ fontSize: '12px', color: '#4CAF50' }}>
-                          ✓ {photoSession.orderId}_{idx + 1}.jpg
-                        </div>
+                        <div key={idx} style={{ fontSize: '12px', color: '#4CAF50' }}>✓ {photoSession.orderId}_{idx + 1}.jpg</div>
                       ))}
                     </div>
                   )}
 
                   {photoSession.photos.length >= 3 && (
-                    <button 
-                      className="btn btn-success" 
-                      onClick={handleArchiveOrder}
-                      disabled={isLoading}
-                      style={{ width: '100%', marginTop: '1rem', padding: '12px', fontSize: '15px' }}
-                    >
-                      {isLoading ? '⏳ Archiwizuję...' : '✓ Zarchiwizuj zamówienie'}
+                    <button className="btn btn-success" onClick={handleArchiveOrder} disabled={isLoading} style={{ width: '100%', marginTop: '1rem' }}>
+                      {isLoading ? '⏳' : '✓'} Zarchiwizuj
                     </button>
                   )}
 
                   {photoSession.photos.length < 3 && (
-                    <div className="warning-box" style={{ marginTop: '1rem' }}>
-                      ⚠️ Potrzebujesz jeszcze {3 - photoSession.photos.length} zdjęcia(ć)
-                    </div>
+                    <div className="warning-box">⚠️ Potrzebujesz jeszcze {3 - photoSession.photos.length} zdjęcia(ć)</div>
                   )}
 
-                  <button 
-                    className="btn btn-danger" 
-                    onClick={() => {
-                      stopCamera();
-                      setPhotoSession(null);
-                    }}
-                    style={{ width: '100%', marginTop: '1rem' }}
-                    disabled={isLoading}
-                  >
-                    ↶ Anuluj
+                  <button className="btn btn-danger" onClick={() => { stopCamera(); setPhotoSession(null); }} style={{ width: '100%', marginTop: '1rem' }} disabled={isLoading}>
+                    Anuluj
                   </button>
                 </div>
               )}
@@ -1066,18 +1115,12 @@ export default function ProductionSystem() {
           {activeTab === 'archive' && (
             <div>
               <h2>Archiwum ({archivedOrders.length})</h2>
-              {archivedOrders.length === 0 ? (
-                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zarchiwizowanych</div>
-              ) : (
-                archivedOrders.map(order => (
-                  <div key={order.docId} className="card">
-                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
-                    {order.warehousePhotos && (
-                      <div style={{ fontSize: '11px', color: '#4CAF50' }}>📸 {order.warehousePhotos} zdjęć</div>
-                    )}
-                  </div>
-                ))
-              )}
+              {archivedOrders.map(order => (
+                <div key={order.docId} className="card">
+                  <div>#{order.id}</div>
+                  {order.warehousePhotos && <div style={{ fontSize: '11px', color: '#4CAF50' }}>📸 {order.warehousePhotos} zdjęć</div>}
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -1092,44 +1135,32 @@ export default function ProductionSystem() {
 
           <div className="grid">
             <div>
-              <h3>Email powiadomień</h3>
               <div className="card">
-                <div className="form-group">
-                  <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} disabled={isLoading} />
-                </div>
-                <button className="btn btn-success" onClick={handleUpdateEmail} disabled={isLoading} style={{ width: '100%' }}>Zapisz</button>
+                <h3>Email powiadomień</h3>
+                <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} style={{ width: '100%', marginBottom: '1rem' }} />
+                <button className="btn btn-success" onClick={handleUpdateEmail} disabled={isLoading}>Zapisz</button>
               </div>
             </div>
 
             <div>
-              <h3>Pracownicy</h3>
               <div className="card">
-                <h4 style={{ margin: '0 0 1rem 0' }}>Dodaj nowego</h4>
-                <div className="form-group">
-                  <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Imię" disabled={isLoading} />
-                </div>
-                <div className="form-group">
-                  <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="Email" disabled={isLoading} />
-                </div>
-                <div className="form-group">
-                  <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="Hasło" disabled={isLoading} />
-                </div>
-                <div className="form-group">
-                  <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} disabled={isLoading}>
-                    <option value="operator">Operator</option>
-                    <option value="order_admin">Admin Jakości</option>
-                    <option value="warehouse">Magazynowy</option>
-                    <option value="admin">Administrator</option>
-                  </select>
-                </div>
+                <h3>Pracownicy</h3>
+                <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Imię" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} style={{ width: '100%', marginBottom: '1rem' }}>
+                  <option value="operator">Operator</option>
+                  <option value="order_admin">Admin Jakości</option>
+                  <option value="warehouse">Magazynowy</option>
+                  <option value="admin">Administrator</option>
+                </select>
                 <button className="btn btn-success" onClick={handleAddUser} disabled={isLoading} style={{ width: '100%' }}>Dodaj</button>
 
-                <h4 style={{ margin: '1.5rem 0 1rem 0' }}>Lista</h4>
+                <h4 style={{ marginTop: '1rem', marginBottom: '0.5rem' }}>Lista</h4>
                 {users.filter(u => !u.deleted).map(u => (
                   <div key={u.id} className="user-row">
                     <div>
-                      <strong>{u.name}</strong><br/>
-                      <span style={{ fontSize: '11px', color: '#666' }}>{u.email}</span>
+                      <strong>{u.name}</strong> ({u.email})
                       <span className="user-role">{u.role}</span>
                     </div>
                     {u.id !== currentUser.uid && (
