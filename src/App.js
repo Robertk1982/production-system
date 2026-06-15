@@ -30,11 +30,11 @@ const compressImage = (file) => {
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+        const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
         canvas.width = img.width * scale;
         canvas.height = img.height * scale;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.7));
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
       };
     };
   });
@@ -583,11 +583,11 @@ export default function ProductionSystem() {
 
     try {
       const ctx = canvasRef.current.getContext('2d');
-      const scale = Math.min(1, 1600 / Math.max(videoRef.current.videoWidth, videoRef.current.videoHeight));
+      const scale = Math.min(1, 2000 / Math.max(videoRef.current.videoWidth, videoRef.current.videoHeight));
       canvasRef.current.width = videoRef.current.videoWidth * scale;
       canvasRef.current.height = videoRef.current.videoHeight * scale;
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.7);
+      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.85);
 
       setIsLoading(true);
       const photoNumber = photoSession.photos.length + 1;
