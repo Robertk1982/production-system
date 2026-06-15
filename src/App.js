@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const FIREBASE_CONFIG = {
@@ -28,6 +28,7 @@ export default function ProductionSystem() {
   const [newOrderNum, setNewOrderNum] = useState('');
   const [issueDesc, setIssueDesc] = useState('');
   const [issuePhoto, setIssuePhoto] = useState(null);
+  const [issuePhotoFile, setIssuePhotoFile] = useState(null);
   const [settings, setSettings] = useState({ notificationEmail: 'manager@company.com' });
   const [newEmail, setNewEmail] = useState(settings.notificationEmail);
   const [isLoading, setIsLoading] = useState(false);
@@ -48,22 +49,21 @@ export default function ProductionSystem() {
     const loadUsers = async () => {
       try {
         const usersRef = collection(db, 'users');
-        const snapshot = await getDocs(usersRef);
-        if (snapshot.empty) {
-          // Jeśli baza pusta, dodaj demo użytkowników
-          const demoUsers = [
-            { name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
-            { name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
-            { name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
-            { name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
-          ];
-          for (const user of demoUsers) {
-            await addDoc(usersRef, user);
+        const unsubscribe = onSnapshot(usersRef, (snapshot) => {
+          if (snapshot.empty) {
+            const demoUsers = [
+              { name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
+              { name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
+              { name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
+              { name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
+            ];
+            demoUsers.forEach(user => addDoc(usersRef, user));
+            setUsers(demoUsers);
+          } else {
+            setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
           }
-          setUsers(demoUsers);
-        } else {
-          setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        }
+        });
+        return () => unsubscribe();
       } catch (err) {
         console.error('Błąd załadowania użytkowników:', err);
       }
@@ -74,40 +74,33 @@ export default function ProductionSystem() {
   // Real-time listen na zamówienia
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'orders'), (snapshot) => {
-      const ordersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const ordersList = snapshot.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
       setOrders(ordersList);
     });
     return () => unsubscribe();
   }, []);
+
+  // CZYŚĆ STATE gdy zmieni się selectedOrderId
+  useEffect(() => {
+    if (selectedOrderId === null) {
+      setIssueDesc('');
+      setIssuePhoto(null);
+      setIssuePhotoFile(null);
+    }
+  }, [selectedOrderId]);
 
   const handleLogin = async () => {
     if (!loginEmail || !loginPassword) {
       alert('Wpisz email i hasło');
       return;
     }
-    try {
-      const usersRef = collection(db, 'users');
-      const q = query(usersRef, where('email', '==', loginEmail));
-      const snapshot = await getDocs(q);
-      
-      if (snapshot.empty) {
-        alert('Błędny email lub hasło');
-        return;
-      }
-
-      const userDoc = snapshot.docs[0];
-      const user = userDoc.data();
-
-      if (user.password === loginPassword) {
-        setCurrentUser({ uid: userDoc.id, ...user });
-        setAppState('dashboard');
-        setActiveTab('orders');
-      } else {
-        alert('Błędny email lub hasło');
-      }
-    } catch (err) {
-      console.error('Błąd logowania:', err);
-      alert('Błąd logowania: ' + err.message);
+    const user = users.find(u => u.email === loginEmail && u.password === loginPassword);
+    if (user) {
+      setCurrentUser({ uid: user.id, ...user });
+      setAppState('dashboard');
+      setActiveTab('orders');
+    } else {
+      alert('Błędny email lub hasło');
     }
   };
 
@@ -125,12 +118,9 @@ export default function ProductionSystem() {
     
     try {
       setIsLoading(true);
-      
-      // Sprawdzenie czy takie zamówienie już istnieje
       const existing = orders.find(o => o.id === newOrderNum && o.status !== 'archived');
       if (existing) {
         alert('To zamówienie już istnieje!');
-        setIsLoading(false);
         return;
       }
 
@@ -181,6 +171,7 @@ export default function ProductionSystem() {
   const handlePhotoChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
+      setIssuePhotoFile(file);
       const reader = new FileReader();
       reader.onload = (event) => {
         setIssuePhoto(event.target?.result);
@@ -201,9 +192,23 @@ export default function ProductionSystem() {
       const selectedOrder = orders.find(o => o.id === selectedOrderId);
       if (!selectedOrder) return;
 
+      let photoURL = null;
+      
+      // Upload zdjęcia do Firebase Storage
+      if (issuePhotoFile) {
+        try {
+          const storageRef = ref(storage, `problems/${Date.now()}-${issuePhotoFile.name}`);
+          await uploadBytes(storageRef, issuePhotoFile);
+          photoURL = await getDownloadURL(storageRef);
+        } catch (uploadErr) {
+          console.error('Błąd uploadu zdjęcia:', uploadErr);
+          alert('Błąd uploadu zdjęcia, ale dodawam problem bez zdjęcia');
+        }
+      }
+
       const problem = {
         id: Date.now(),
-        photo: issuePhoto,
+        photoURL: photoURL,
         description: issueDesc,
         cut: false,
         repaired: false,
@@ -218,17 +223,19 @@ export default function ProductionSystem() {
         action: `Dodał problem: "${issueDesc}"`
       }];
 
-      const orderRef = doc(db, 'orders', selectedOrder.id);
+      const orderRef = doc(db, 'orders', selectedOrder.docId);
       await updateDoc(orderRef, {
         problems: updatedProblems,
         history: updatedHistory
       });
 
+      // CZYSZCZENIE STATE
       setIssuePhoto(null);
+      setIssuePhotoFile(null);
       setIssueDesc('');
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd dodania problemu');
+      alert('Błąd dodania problemu: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -257,14 +264,14 @@ export default function ProductionSystem() {
         });
       }
 
-      const orderRef = doc(db, 'orders', order.id);
+      const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
         problems: updatedProblems,
         history: updatedHistory
       });
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd aktualizacji problemu');
+      alert('Błąd aktualizacji problemu: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -282,7 +289,7 @@ export default function ProductionSystem() {
         return;
       }
 
-      const orderRef = doc(db, 'orders', order.id);
+      const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
         status: 'ready',
         history: [...order.history, {
@@ -295,7 +302,7 @@ export default function ProductionSystem() {
       setSelectedOrderId(null);
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd zamknięcia zamówienia');
+      alert('Błąd zamknięcia zamówienia: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -309,7 +316,7 @@ export default function ProductionSystem() {
 
       const statusNames = { pallet: 'Paletowy', dedicated: 'Dedykowana', archived: 'Archiwum' };
       
-      const orderRef = doc(db, 'orders', order.id);
+      const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
         status: newStatus,
         history: [...order.history, {
@@ -326,7 +333,7 @@ export default function ProductionSystem() {
       setSelectedOrderId(null);
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd przeniesienia zamówienia');
+      alert('Błąd przeniesienia zamówienia: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -339,7 +346,7 @@ export default function ProductionSystem() {
         const order = orders.find(o => o.id === confirmModal.orderId);
         if (!order) return;
 
-        const orderRef = doc(db, 'orders', order.id);
+        const orderRef = doc(db, 'orders', order.docId);
         await updateDoc(orderRef, {
           status: 'ready',
           history: [...order.history, {
@@ -350,7 +357,7 @@ export default function ProductionSystem() {
         });
       } catch (err) {
         console.error('Błąd:', err);
-        alert('Błąd cofania zamówienia');
+        alert('Błąd cofania zamówienia: ' + err.message);
       } finally {
         setIsLoading(false);
       }
@@ -380,7 +387,7 @@ export default function ProductionSystem() {
       alert('Użytkownik dodany!');
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd dodania użytkownika');
+      alert('Błąd dodania użytkownika: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -395,7 +402,7 @@ export default function ProductionSystem() {
         setUsers(users.filter(u => u.id !== userId));
       } catch (err) {
         console.error('Błąd:', err);
-        alert('Błąd usunięcia użytkownika');
+        alert('Błąd usunięcia użytkownika: ' + err.message);
       } finally {
         setIsLoading(false);
       }
@@ -449,6 +456,7 @@ export default function ProductionSystem() {
         .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
         .problem-row { background: #f9f9f9; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; border-left: 3px solid #ff9800; }
         .checkbox-group { display: flex; gap: 1.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
+        .checkbox-group label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
         .order-card { background: white; border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; cursor: pointer; border-radius: 8px; }
         .order-card:hover { background: #f5f5f5; }
         .order-card.active { border: 2px solid #2196F3; background: #e3f2fd; }
@@ -611,21 +619,19 @@ export default function ProductionSystem() {
                         <h4 style={{ marginBottom: '0.75rem' }}>Błędy:</h4>
                         {selectedOrder.problems.map(p => (
                           <div key={p.id} className="problem-row">
-                            {p.photo && <img src={p.photo} className="photo-preview" alt="Problem photo" />}
+                            {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem photo" />}
                             <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                             <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
-                            {currentUser.role === 'operator' && (
-                              <div className="checkbox-group">
-                                <label>
-                                  <input type="checkbox" checked={p.cut} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} />
-                                  {' '}Wycięty element
-                                </label>
-                                <label>
-                                  <input type="checkbox" checked={p.repaired} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} />
-                                  {' '}Dorobiony
-                                </label>
-                              </div>
-                            )}
+                            <div className="checkbox-group">
+                              <label>
+                                <input type="checkbox" checked={p.cut || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} />
+                                Wycięty element
+                              </label>
+                              <label>
+                                <input type="checkbox" checked={p.repaired || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} />
+                                Dorobiony
+                              </label>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -798,7 +804,7 @@ export default function ProductionSystem() {
                       <h4 style={{ marginBottom: '0.75rem' }}>Naprawiane elementy:</h4>
                       {selectedOrder.problems.map(p => (
                         <div key={p.id} className="problem-row">
-                          {p.photo && <img src={p.photo} className="photo-preview" alt="Problem photo" />}
+                          {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem photo" />}
                           <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                           <p style={{ margin: '0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
                         </div>
