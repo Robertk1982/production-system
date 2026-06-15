@@ -338,6 +338,7 @@ export default function ProductionSystem() {
 
   // Określenie widocznych zakładek zg rolą
   const getTabs = () => {
+    if (!currentUser) return [];
     if (currentUser.role === 'operator') {
       return ['orders']; // Tylko "Zamówienia"
     } else if (currentUser.role === 'order_admin') {
