@@ -14,7 +14,7 @@ const FIREBASE_CONFIG = {
 const GOOGLE_CONFIG = {
   CLIENT_ID: '736317012952-856e5b7qsgqq346845eb7kgu4qokq49d.apps.googleusercontent.com',
   PARENT_FOLDER_ID: '1R8zz1X_qmRDMM3X82jI_0lhDLF6qEpTe',
-  SCOPES: 'https://www.googleapis.com/auth/drive.file'
+  SCOPES: 'https://www.googleapis.com/auth/drive'
 };
 
 const app = initializeApp(FIREBASE_CONFIG);
