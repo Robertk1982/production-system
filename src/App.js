@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot, deleteDoc } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDKUns-Jmw1RR9afnymTKF1xdjImHJGkNU",
@@ -14,9 +13,8 @@ const FIREBASE_CONFIG = {
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
-const storage = getStorage(app);
 
-// Kompresja zdjęcia
+// Kompresja zdjęcia do base64
 const compressImage = async (file) => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -27,14 +25,10 @@ const compressImage = async (file) => {
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        canvas.width = img.width * 0.5; // Zmniejsz rozdzielczość
+        canvas.width = img.width * 0.5;
         canvas.height = img.height * 0.5;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(
-          (blob) => resolve(blob),
-          'image/jpeg',
-          0.4 // Quality 40%
-        );
+        resolve(canvas.toDataURL('image/jpeg', 0.3));
       };
     };
   });
@@ -52,7 +46,6 @@ export default function ProductionSystem() {
   const [newOrderNum, setNewOrderNum] = useState('');
   const [issueDesc, setIssueDesc] = useState('');
   const [issuePhoto, setIssuePhoto] = useState(null);
-  const [issuePhotoFile, setIssuePhotoFile] = useState(null);
   const [settings, setSettings] = useState({ notificationEmail: 'manager@company.com' });
   const [newEmail, setNewEmail] = useState(settings.notificationEmail);
   const [isLoading, setIsLoading] = useState(false);
@@ -105,12 +98,29 @@ export default function ProductionSystem() {
     return () => unsubscribe();
   }, []);
 
+  // Usuń zdjęcia gdy zamówienie trafia do archiwum
+  useEffect(() => {
+    const cleanupArchived = async () => {
+      const archivedOrders = orders.filter(o => o.status === 'archived');
+      for (const order of archivedOrders) {
+        if (order.problems && order.problems.length > 0) {
+          const hasPhotos = order.problems.some(p => p.photoURL);
+          if (hasPhotos) {
+            const updatedProblems = order.problems.map(p => ({ ...p, photoURL: null }));
+            const orderRef = doc(db, 'orders', order.docId);
+            await updateDoc(orderRef, { problems: updatedProblems });
+          }
+        }
+      }
+    };
+    cleanupArchived();
+  }, [orders]);
+
   // CZYŚĆ STATE i WYŁĄCZ KAMERĘ gdy zmieni się selectedOrderId
   useEffect(() => {
     if (selectedOrderId === null) {
       setIssueDesc('');
       setIssuePhoto(null);
-      setIssuePhotoFile(null);
       // STOP streama kamery
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
@@ -121,33 +131,6 @@ export default function ProductionSystem() {
       }
     }
   }, [selectedOrderId]);
-
-  // Usuń zdjęcia gdy zamówienie trafia do archiwum
-  useEffect(() => {
-    const deletePhotosFromArchived = async () => {
-      const archivedOrders = orders.filter(o => o.status === 'archived');
-      for (const order of archivedOrders) {
-        if (order.problems && order.problems.length > 0) {
-          for (const problem of order.problems) {
-            if (problem.photoURL) {
-              try {
-                const photoRef = ref(storage, problem.photoURL);
-                await deleteObject(photoRef);
-              } catch (err) {
-                console.log('Zdjęcie już usunięte lub nie istnieje');
-              }
-            }
-          }
-          // Usuń referencje do zdjęć z bazy
-          const updatedProblems = order.problems.map(p => ({ ...p, photoURL: null }));
-          const orderRef = doc(db, 'orders', order.docId);
-          await updateDoc(orderRef, { problems: updatedProblems });
-        }
-      }
-    };
-    
-    deletePhotosFromArchived();
-  }, [orders]);
 
   // WYŁĄCZ KAMERĘ przy logout
   const handleLogout = () => {
@@ -232,12 +215,8 @@ export default function ProductionSystem() {
     if (canvasRef.current && videoRef.current) {
       const ctx = canvasRef.current.getContext('2d');
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoData = canvasRef.current.toDataURL('image/jpeg', 0.4);
+      const photoData = canvasRef.current.toDataURL('image/jpeg', 0.3);
       setIssuePhoto(photoData);
-      
-      canvasRef.current.toBlob((blob) => {
-        setIssuePhotoFile(blob);
-      }, 'image/jpeg', 0.4);
     }
   };
 
@@ -245,15 +224,8 @@ export default function ProductionSystem() {
     const file = e.target.files?.[0];
     if (file) {
       try {
-        // Kompresuj zdjęcie
-        const compressedBlob = await compressImage(file);
-        setIssuePhotoFile(compressedBlob);
-        
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          setIssuePhoto(event.target?.result);
-        };
-        reader.readAsDataURL(compressedBlob);
+        const compressedBase64 = await compressImage(file);
+        setIssuePhoto(compressedBase64);
       } catch (err) {
         console.error('Błąd kompresji:', err);
         alert('Błąd kompresji zdjęcia');
@@ -273,32 +245,9 @@ export default function ProductionSystem() {
       const selectedOrder = orders.find(o => o.id === selectedOrderId);
       if (!selectedOrder) return;
 
-      let photoURL = null;
-      
-      // Upload zdjęcia do Firebase Storage (z timeout)
-      if (issuePhotoFile) {
-        try {
-          const timestamp = Date.now();
-          const fileName = `${timestamp}-${Math.random().toString(36).substr(2, 9)}.jpg`;
-          const storageRef = ref(storage, `problems/${fileName}`);
-          
-          // Upload z timeout 30 sekund
-          const uploadPromise = uploadBytes(storageRef, issuePhotoFile);
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Upload timeout')), 30000)
-          );
-          
-          await Promise.race([uploadPromise, timeoutPromise]);
-          photoURL = await getDownloadURL(storageRef);
-        } catch (uploadErr) {
-          console.error('Błąd uploadu:', uploadErr);
-          alert('Błąd uploadu zdjęcia. Dodaję problem bez zdjęcia.');
-        }
-      }
-
       const problem = {
         id: Date.now(),
-        photoURL: photoURL || null,
+        photoURL: issuePhoto || null,
         description: issueDesc,
         cut: false,
         repaired: false,
@@ -321,7 +270,6 @@ export default function ProductionSystem() {
 
       // CZYSZCZENIE STATE
       setIssuePhoto(null);
-      setIssuePhotoFile(null);
       setIssueDesc('');
     } catch (err) {
       console.error('Błąd:', err);
@@ -674,7 +622,7 @@ export default function ProductionSystem() {
                         <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
                       </div>
                       <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading}>
-                        {isLoading ? '⏳ Chwileczka...' : '✓ Rozpocznij'}
+                        {isLoading ? '⏳' : '✓'} Rozpocznij
                       </button>
                     </div>
                   </>
