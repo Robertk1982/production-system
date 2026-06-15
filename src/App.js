@@ -48,8 +48,7 @@ class FirebaseManager {
       ...orderData,
       createdAt: new Date().toISOString(),
       problems: [],
-      archived: false,
-      statusChanged: false,
+      status: 'in_progress', // in_progress, ready, archived
       history: [{
         timestamp: new Date().toLocaleString('pl-PL'),
         user: this.currentUser?.name || 'Unknown',
@@ -157,7 +156,7 @@ export default function ProductionSystem() {
       alert('Wpisz numer zamówienia');
       return;
     }
-    const existing = orders.find(o => o.id === newOrderNum && !o.archived);
+    const existing = orders.find(o => o.id === newOrderNum && o.status !== 'archived');
     if (existing) {
       alert('To zamówienie już istnieje!');
       return;
@@ -265,7 +264,7 @@ export default function ProductionSystem() {
       return;
     }
 
-    order.statusChanged = false;
+    order.status = 'ready'; // Zamówienie przechodzi do "Gotowe"
     order.history.push({
       timestamp: new Date().toLocaleString('pl-PL'),
       user: currentUser?.name || 'Unknown',
@@ -281,8 +280,7 @@ export default function ProductionSystem() {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
 
-    order.statusChanged = true;
-    order.archived = true;
+    order.status = 'archived';
     order.history.push({
       timestamp: new Date().toLocaleString('pl-PL'),
       user: currentUser?.name || 'Unknown',
@@ -330,11 +328,27 @@ export default function ProductionSystem() {
     alert('Email zaktualizowany!');
   };
 
-  const activeOrders = orders.filter(o => !o.archived);
-  const pendingStatusOrders = orders.filter(o => !o.archived && !o.statusChanged && o.problems.length === 0);
-  const archivedOrders = orders.filter(o => o.archived);
+  // Filtrowanie zamówień wg statusu
+  const inProgressOrders = orders.filter(o => o.status === 'in_progress');
+  const readyOrders = orders.filter(o => o.status === 'ready');
+  const archivedOrders = orders.filter(o => o.status === 'archived');
+  
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
   const unrepairedCount = orders.reduce((sum, o) => sum + o.problems.filter(p => !(p.cut && p.repaired)).length, 0);
+
+  // Określenie widocznych zakładek zg rolą
+  const getTabs = () => {
+    if (currentUser.role === 'operator') {
+      return ['orders']; // Tylko "Zamówienia"
+    } else if (currentUser.role === 'order_admin') {
+      return ['orders', 'ready']; // "Zamówienia" + "Gotowe"
+    } else if (currentUser.role === 'admin') {
+      return ['orders', 'ready', 'archive']; // Wszystkie 3
+    }
+    return [];
+  };
+
+  const visibleTabs = getTabs();
 
   return (
     <div style={{ padding: '1rem', minHeight: '100vh', backgroundColor: '#f5f5f5', fontFamily: 'Arial, sans-serif' }}>
@@ -372,7 +386,6 @@ export default function ProductionSystem() {
         .user-row { background: #f9f9f9; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
         .user-info { flex: 1; }
         .user-role { display: inline-block; padding: 3px 8px; background: #e3f2fd; color: #2196F3; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 0.5rem; }
-        .badge { display: inline-block; padding: 3px 8px; background: #fff3cd; color: #856404; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 0.5rem; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
@@ -411,49 +424,55 @@ export default function ProductionSystem() {
 
           <div className="stats">
             <div className="stat-box">
-              <div className="stat-number">{activeOrders.length}</div>
-              <div className="stat-label">Aktywne</div>
+              <div className="stat-number">{inProgressOrders.length}</div>
+              <div className="stat-label">W trakcie</div>
             </div>
             <div className="stat-box">
               <div className="stat-number" style={{ color: '#ff9800' }}>{unrepairedCount}</div>
               <div className="stat-label">Do naprawy</div>
             </div>
             <div className="stat-box">
-              <div className="stat-number" style={{ color: '#17a2b8' }}>{pendingStatusOrders.length}</div>
-              <div className="stat-label">Czeka status</div>
+              <div className="stat-number" style={{ color: '#17a2b8' }}>{readyOrders.length}</div>
+              <div className="stat-label">Gotowe</div>
             </div>
             <div className="stat-box">
               <div className="stat-number" style={{ color: '#4CAF50' }}>{archivedOrders.length}</div>
-              <div className="stat-label">Zarchiwizowane</div>
+              <div className="stat-label">Archiwum</div>
             </div>
           </div>
 
           <div className="tabs">
-            {(currentUser.role === 'operator' || currentUser.role === 'admin') && (
+            {visibleTabs.includes('orders') && (
               <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => setActiveTab('orders')}>📦 Zamówienia</button>
             )}
-            {currentUser.role === 'order_admin' && (
-              <button className={`tab-btn ${activeTab === 'status' ? 'active' : ''}`} onClick={() => setActiveTab('status')}>📋 Zmiana statusu</button>
+            {visibleTabs.includes('ready') && (
+              <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => setActiveTab('ready')}>📋 Gotowe</button>
             )}
-            <button className={`tab-btn ${activeTab === 'archive' ? 'active' : ''}`} onClick={() => setActiveTab('archive')}>📂 Archiwum</button>
+            {visibleTabs.includes('archive') && (
+              <button className={`tab-btn ${activeTab === 'archive' ? 'active' : ''}`} onClick={() => setActiveTab('archive')}>📂 Archiwum</button>
+            )}
           </div>
 
-          {activeTab === 'orders' && (currentUser.role === 'operator' || currentUser.role === 'admin') && (
+          {activeTab === 'orders' && (
             <div className="grid">
               <div>
-                <h3 style={{ marginBottom: '1rem' }}>+ Nowe zamówienie</h3>
-                <div className="card">
-                  <div className="form-group">
-                    <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
-                  </div>
-                  <button className="btn btn-success" onClick={handleStartOrder}>Rozpocznij</button>
-                </div>
+                {currentUser.role === 'operator' && (
+                  <>
+                    <h3 style={{ marginBottom: '1rem' }}>+ Nowe zamówienie</h3>
+                    <div className="card">
+                      <div className="form-group">
+                        <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
+                      </div>
+                      <button className="btn btn-success" onClick={handleStartOrder}>Rozpocznij</button>
+                    </div>
+                  </>
+                )}
 
-                <h3 style={{ marginBottom: '1rem' }}>Zamówienia ({activeOrders.length})</h3>
-                {activeOrders.length === 0 ? (
+                <h3 style={{ marginBottom: '1rem' }}>Zamówienia ({inProgressOrders.length})</h3>
+                {inProgressOrders.length === 0 ? (
                   <p style={{ textAlign: 'center', color: '#999' }}>Brak aktywnych zamówień</p>
                 ) : (
-                  activeOrders.map(order => {
+                  inProgressOrders.map(order => {
                     const unrepairedProblems = order.problems.filter(p => !(p.cut && p.repaired));
                     return (
                       <div key={order.id} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
@@ -462,16 +481,13 @@ export default function ProductionSystem() {
                         {unrepairedProblems.length > 0 && (
                           <div style={{ fontSize: '11px', color: '#ff9800' }}>⚠️ {unrepairedProblems.length} błędy</div>
                         )}
-                        {order.problems.length === 0 && !order.statusChanged && (
-                          <div style={{ fontSize: '11px', color: '#17a2b8' }}>📋 Czeka na zmianę statusu</div>
-                        )}
                       </div>
                     );
                   })
                 )}
               </div>
 
-              {selectedOrder && (
+              {selectedOrder && selectedOrder.status === 'in_progress' && (
                 <div>
                   <div className="card">
                     <h3 style={{ marginBottom: '1rem' }}>Zamówienie #{selectedOrder.id}</h3>
@@ -484,65 +500,69 @@ export default function ProductionSystem() {
                             {p.photo && <img src={p.photo} className="photo-preview" alt="Problem photo" />}
                             <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                             <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
-                            <div className="checkbox-group">
-                              <label>
-                                <input type="checkbox" checked={p.cut} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} />
-                                {' '}Wycięty element
-                              </label>
-                              <label>
-                                <input type="checkbox" checked={p.repaired} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} />
-                                {' '}Dorobiony
-                              </label>
-                            </div>
+                            {currentUser.role === 'operator' && (
+                              <div className="checkbox-group">
+                                <label>
+                                  <input type="checkbox" checked={p.cut} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} />
+                                  {' '}Wycięty element
+                                </label>
+                                <label>
+                                  <input type="checkbox" checked={p.repaired} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} />
+                                  {' '}Dorobiony
+                                </label>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
                     )}
 
-                    <h4 style={{ marginBottom: '0.75rem' }}>Dodaj błąd</h4>
-                    
-                    <div className="form-group">
-                      <label>Zdjęcie (z kamery lub plik)</label>
-                      <div style={{ marginBottom: '1rem' }}>
-                        <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }}>📷 Włącz kamerę</button>
-                        <button className="btn" onClick={() => fileInputRef.current?.click()}>📤 Prześlij plik</button>
-                        <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} />
-                      </div>
-                      {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
-                    </div>
+                    {currentUser.role === 'operator' && (
+                      <>
+                        <h4 style={{ marginBottom: '0.75rem' }}>Dodaj błąd</h4>
+                        
+                        <div className="form-group">
+                          <label>Zdjęcie (z kamery lub plik)</label>
+                          <div style={{ marginBottom: '1rem' }}>
+                            <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }}>📷 Włącz kamerę</button>
+                            <button className="btn" onClick={() => fileInputRef.current?.click()}>📤 Prześlij plik</button>
+                            <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} />
+                          </div>
+                          {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
+                        </div>
 
-                    <div className="video-container" style={{ display: selectedOrder ? 'block' : 'none' }}>
-                      <video ref={videoRef} autoPlay playsInline></video>
-                      <canvas ref={canvasRef} width={640} height={480}></canvas>
-                    </div>
+                        <div className="video-container" style={{ display: selectedOrder ? 'block' : 'none' }}>
+                          <video ref={videoRef} autoPlay playsInline></video>
+                          <canvas ref={canvasRef} width={640} height={480}></canvas>
+                        </div>
 
-                    {videoRef.current?.srcObject && (
-                      <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }}>Zrób zdjęcie</button>
-                    )}
+                        {videoRef.current?.srcObject && (
+                          <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }}>Zrób zdjęcie</button>
+                        )}
 
-                    <div className="form-group">
-                      <label>Opis problemu</label>
-                      <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..."></textarea>
-                    </div>
+                        <div className="form-group">
+                          <label>Opis problemu</label>
+                          <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..."></textarea>
+                        </div>
 
-                    <button className="btn btn-success" onClick={handleAddProblem}>Dodaj błąd</button>
+                        <button className="btn btn-success" onClick={handleAddProblem}>Dodaj błąd</button>
 
-                    {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length > 0 && (
-                      <div className="warning-box">⚠️ Czekasz na naprawę {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
-                    )}
+                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length > 0 && (
+                          <div className="warning-box">⚠️ Czekasz na naprawę {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
+                        )}
 
-                    {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length > 0 && (
-                      <div className="success-box">✓ Wszystkie błędy naprawione!</div>
-                    )}
+                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length === 0 && (
+                          <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)}>
+                            ✓ Zlecenie zakończone
+                          </button>
+                        )}
 
-                    {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length === 0 && !selectedOrder.statusChanged && (
-                      <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)}>
-                        ✓ Zlecenie zakończone
-                      </button>
-                    )}
-
-                    {selectedOrder.statusChanged && (
-                      <div className="info-box">✓ Status zmieniony w sklepie - w archiwum</div>
+                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length > 0 && (
+                          <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)}>
+                            ✓ Zlecenie zakończone
+                          </button>
+                        )}
+                      </>
                     )}
 
                     <h4 style={{ marginTop: '1.5rem', marginBottom: '0.75rem' }}>Historia</h4>
@@ -560,24 +580,26 @@ export default function ProductionSystem() {
             </div>
           )}
 
-          {activeTab === 'status' && currentUser.role === 'order_admin' && (
+          {activeTab === 'ready' && (
             <div>
-              <h2>Zmiana statusu zamówień</h2>
-              {pendingStatusOrders.length === 0 ? (
-                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień do zmiany statusu</div>
+              <h2>Gotowe zamówienia ({readyOrders.length})</h2>
+              {readyOrders.length === 0 ? (
+                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak gotowych zamówień</div>
               ) : (
-                pendingStatusOrders.map(order => (
+                readyOrders.map(order => (
                   <div key={order.id} className="card">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '1rem', borderBottom: '1px solid #ddd' }}>
                       <div>
                         <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
                         <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
-                      <button className="btn btn-success" onClick={() => handleConfirmStatus(order.id)}>✓ Zmieniony w sklepie</button>
+                      {currentUser.role === 'order_admin' && (
+                        <button className="btn btn-success" onClick={() => handleConfirmStatus(order.id)}>✓ Zmieniony w sklepie</button>
+                      )}
                     </div>
                     {order.problems.length > 0 && (
                       <div>
-                        <p style={{ fontSize: '12px', color: '#666', marginBottom: '0.5rem' }}>Elementy które były naprawiane:</p>
+                        <p style={{ fontSize: '12px', color: '#666', marginBottom: '0.5rem' }}>Naprawiane elementy:</p>
                         <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '13px' }}>
                           {order.problems.map(p => (
                             <li key={p.id}>{p.description}</li>
@@ -608,7 +630,7 @@ export default function ProductionSystem() {
                 ))
               )}
 
-              {selectedOrderId && selectedOrder && selectedOrder.archived && (
+              {selectedOrderId && selectedOrder && selectedOrder.status === 'archived' && (
                 <div className="card" style={{ marginTop: '1.5rem' }}>
                   <h3 style={{ marginBottom: '1rem' }}>Szczegóły zamówienia #{selectedOrder.id}</h3>
                   
@@ -681,7 +703,7 @@ export default function ProductionSystem() {
                   <label>Rola</label>
                   <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}>
                     <option value="operator">Operator</option>
-                    <option value="order_admin">Admin Jakości (zmiana statusu)</option>
+                    <option value="order_admin">Admin Jakości</option>
                     <option value="admin">Administrator</option>
                   </select>
                 </div>
