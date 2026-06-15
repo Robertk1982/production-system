@@ -21,7 +21,7 @@ const GOOGLE_CONFIG = {
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 
-// Kompresja zdjęcia do base64
+// SUPER KOMPRESJA - max 200-300kb
 const compressImage = async (file) => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -32,10 +32,17 @@ const compressImage = async (file) => {
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        canvas.width = img.width * 0.5;
-        canvas.height = img.height * 0.5;
+        // Zmniejsz rozdzielczość do 40%
+        canvas.width = img.width * 0.4;
+        canvas.height = img.height * 0.4;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.3));
+        
+        // Kompresuj do quality 0.2 (200-300kb)
+        canvas.toBlob((blob) => {
+          const reader2 = new FileReader();
+          reader2.onload = (e) => resolve(e.target.result);
+          reader2.readAsDataURL(blob);
+        }, 'image/jpeg', 0.2);
       };
     };
   });
@@ -45,6 +52,7 @@ export default function ProductionSystem() {
   const [appState, setAppState] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
   const [googleAuth, setGoogleAuth] = useState(null);
+  const [googleAuthorized, setGoogleAuthorized] = useState(false);
   const [loginEmail, setLoginEmail] = useState('op1@company.com');
   const [loginPassword, setLoginPassword] = useState('1234');
   
@@ -71,6 +79,7 @@ export default function ProductionSystem() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
+  const warehouseFileInputRef = useRef(null);
   const streamRef = useRef(null);
 
   // Inicjalizuj Google API
@@ -87,7 +96,13 @@ export default function ProductionSystem() {
             discoveryDocs: GOOGLE_CONFIG.DISCOVERY_DOCS,
             scope: GOOGLE_CONFIG.SCOPES
           }).then(() => {
-            setGoogleAuth(window.gapi.auth2.getAuthInstance());
+            const auth = window.gapi.auth2.getAuthInstance();
+            setGoogleAuth(auth);
+            
+            // Sprawdź czy już zalogowany
+            if (auth.isSignedIn.get()) {
+              setGoogleAuthorized(true);
+            }
           }).catch(err => console.error('Google API Error:', err));
         });
       };
@@ -169,6 +184,7 @@ export default function ProductionSystem() {
   // WYŁĄCZ KAMERĘ przy logout
   const handleLogout = () => {
     setCameraActive(false);
+    setGoogleAuthorized(false);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -177,7 +193,11 @@ export default function ProductionSystem() {
       videoRef.current.srcObject = null;
     }
     if (googleAuth) {
-      googleAuth.signOut();
+      try {
+        googleAuth.signOut();
+      } catch (err) {
+        console.error('Google signout error:', err);
+      }
     }
     setCurrentUser(null);
     setAppState('login');
@@ -192,20 +212,30 @@ export default function ProductionSystem() {
     const user = users.find(u => u.email === loginEmail && u.password === loginPassword);
     if (user) {
       setCurrentUser({ uid: user.id, ...user });
-      
-      // Jeśli magazynowy - zaloguj do Google
-      if (user.role === 'warehouse' && googleAuth) {
-        try {
-          await googleAuth.signIn();
-        } catch (err) {
-          console.error('Google login error:', err);
-        }
-      }
-      
       setAppState('dashboard');
       setActiveTab('orders');
     } else {
       alert('Błędny email lub hasło');
+    }
+  };
+
+  // Autoryzuj Google Drive
+  const handleAuthorizeGoogle = async () => {
+    if (!googleAuth) {
+      alert('Google API nie załadowało się. Przeładuj stronę.');
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      await googleAuth.signIn();
+      setGoogleAuthorized(true);
+      alert('✅ Autoryzacja Google Drive powiodła się!');
+    } catch (err) {
+      console.error('Google auth error:', err);
+      alert('Błąd autoryzacji: ' + err.message);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -264,7 +294,7 @@ export default function ProductionSystem() {
     if (canvasRef.current && videoRef.current) {
       const ctx = canvasRef.current.getContext('2d');
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoData = canvasRef.current.toDataURL('image/jpeg', 0.3);
+      const photoData = canvasRef.current.toDataURL('image/jpeg', 0.2);
       setIssuePhoto(photoData);
     }
   };
@@ -466,8 +496,20 @@ export default function ProductionSystem() {
   // Google Drive - upload zdjęcia
   const uploadPhotoToGoogleDrive = async (orderId, photoBase64, photoNumber) => {
     try {
+      if (!googleAuth.isSignedIn.get()) {
+        alert('❌ Najpierw autoryzuj dostęp do Google Drive!');
+        return false;
+      }
+
       if (!window.gapi.client.drive) {
         await window.gapi.client.load('drive', 'v3');
+      }
+
+      // Pobierz token
+      const token = googleAuth.currentUser.get().getAuthResponse().id_token;
+      if (!token) {
+        alert('❌ Błąd tokenu. Spróbuj ponownie autoryzować Google Drive.');
+        return false;
       }
 
       // Zamień base64 na Blob
@@ -517,24 +559,29 @@ export default function ProductionSystem() {
       const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${window.gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().id_token}`
+          Authorization: `Bearer ${token}`
         },
         body: form
       });
 
       if (!response.ok) {
-        throw new Error('Upload failed');
+        throw new Error(`Upload failed: ${response.status}`);
       }
 
       return true;
     } catch (err) {
       console.error('Google Drive upload error:', err);
-      alert('Błąd uploadu na Google Drive: ' + err.message);
+      alert('Błąd uploadu: ' + err.message);
       return false;
     }
   };
 
   const handleStartWarehousePhoto = (orderId) => {
+    if (!googleAuthorized) {
+      alert('⚠️ Najpierw autoryzuj dostęp do Google Drive!');
+      return;
+    }
+
     setPhotoSession({
       orderId,
       photos: [],
@@ -549,7 +596,7 @@ export default function ProductionSystem() {
     try {
       const ctx = canvasRef.current.getContext('2d');
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.3);
+      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.2);
 
       setIsLoading(true);
       const photoNumber = photoSession.photos.length + 1;
@@ -568,6 +615,34 @@ export default function ProductionSystem() {
       alert('Błąd wykonania zdjęcia');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Upload wybranego pliku z dysku
+  const handleWarehouseFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (file && photoSession) {
+      try {
+        setIsLoading(true);
+        const compressedBase64 = await compressImage(file);
+        const photoNumber = photoSession.photos.length + 1;
+        
+        const success = await uploadPhotoToGoogleDrive(photoSession.orderId, compressedBase64, photoNumber);
+        
+        if (success) {
+          setPhotoSession({
+            ...photoSession,
+            photos: [...photoSession.photos, compressedBase64],
+            currentPhoto: compressedBase64
+          });
+        }
+      } catch (err) {
+        console.error('Błąd:', err);
+        alert('Błąd uploadu pliku');
+      } finally {
+        setIsLoading(false);
+        e.target.value = '';
+      }
     }
   };
 
@@ -698,6 +773,7 @@ export default function ProductionSystem() {
         .btn-success { border-color: #4CAF50; color: #4CAF50; }
         .btn-danger { border-color: #f44336; color: #f44336; }
         .btn-primary { border-color: #2196F3; color: #2196F3; }
+        .btn-warning { border-color: #ff9800; color: #ff9800; }
         .form-group { margin-bottom: 1rem; }
         .form-group label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 6px; }
         .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
@@ -730,6 +806,7 @@ export default function ProductionSystem() {
         .button-group { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
         .sync-badge { display: inline-block; padding: 4px 8px; background: #4CAF50; color: white; border-radius: 4px; font-size: 10px; margin-left: 0.5rem; }
         .photo-counter { display: inline-block; padding: 6px 12px; background: #2196F3; color: white; border-radius: 4px; font-weight: bold; margin-top: 0.5rem; }
+        .google-auth-badge { display: inline-block; padding: 4px 8px; background: #4285F4; color: white; border-radius: 4px; font-size: 10px; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
@@ -750,10 +827,9 @@ export default function ProductionSystem() {
             </button>
             <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo:</p>
             <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>op1@company.com / 1234 (Operator)</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>qa@company.com / 1234 (Admin Jakości)</p>
             <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>admin@company.com / 1234 (Admin)</p>
             <p style={{ fontSize: '10px', textAlign: 'center', color: '#ff6b6b' }}>⚠️ Magazynowy - dodaj przez Admina!</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ OAuth Google Drive</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ OAuth Google Drive + Super kompresja</p>
           </div>
         </div>
       )}
@@ -790,6 +866,15 @@ export default function ProductionSystem() {
             <div>
               <h1 style={{ margin: '0 0 4px 0' }}>🏭 System Zamówień</h1>
               <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Zalogowany: {currentUser.name} ({currentUser.role})</p>
+              {currentUser.role === 'warehouse' && (
+                <p style={{ margin: '4px 0 0 0', fontSize: '11px' }}>
+                  {googleAuthorized ? (
+                    <span className="google-auth-badge">✓ Google Drive autoryzowany</span>
+                  ) : (
+                    <span style={{ color: '#ff6b6b' }}>❌ Google Drive nie autoryzowany</span>
+                  )}
+                </p>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
               {currentUser.role === 'admin' && (
@@ -1053,7 +1138,17 @@ export default function ProductionSystem() {
           {activeTab === 'photos' && (
             <div>
               <h2>📸 Zdjęcia zamówień ({readyOrders.length})</h2>
-              {!photoSession ? (
+              
+              {!googleAuthorized && (
+                <div className="card" style={{ background: '#fff3cd', borderLeft: '3px solid #ff9800' }}>
+                  <p style={{ margin: '0 0 1rem 0', color: '#333' }}>⚠️ Aby przesyłać zdjęcia na Google Drive, musisz najpierw autoryzować dostęp.</p>
+                  <button className="btn btn-warning" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ width: '100%' }}>
+                    {isLoading ? '⏳ Autoryzuję...' : '🔐 Autoryzuj Google Drive'}
+                  </button>
+                </div>
+              )}
+
+              {googleAuthorized && !photoSession ? (
                 <>
                   {readyOrders.length === 0 ? (
                     <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień do sfotografowania</div>
@@ -1071,7 +1166,7 @@ export default function ProductionSystem() {
                     ))
                   )}
                 </>
-              ) : (
+              ) : googleAuthorized && photoSession ? (
                 <div className="card">
                   <h3 style={{ marginBottom: '1rem' }}>Fotografowanie zamówienia #{photoSession.orderId}</h3>
                   
@@ -1089,6 +1184,13 @@ export default function ProductionSystem() {
                       {isLoading ? '⏳ Uploadowanie...' : '📸 Zrób zdjęcie'}
                     </button>
                   )}
+
+                  <div style={{ marginBottom: '1rem' }}>
+                    <button className="btn btn-primary" onClick={() => warehouseFileInputRef.current?.click()} style={{ width: '100%' }} disabled={isLoading}>
+                      📤 Dodaj zdjęcie z dysku
+                    </button>
+                    <input ref={warehouseFileInputRef} type="file" accept="image/*" onChange={handleWarehouseFileChange} style={{ display: 'none' }} disabled={isLoading} />
+                  </div>
 
                   <div className="photo-counter">
                     Zdjęcia: {photoSession.photos.length}/3
@@ -1141,7 +1243,7 @@ export default function ProductionSystem() {
                     ↶ Anuluj
                   </button>
                 </div>
-              )}
+              ) : null}
             </div>
           )}
 
