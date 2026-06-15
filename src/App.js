@@ -11,11 +11,7 @@ const FIREBASE_CONFIG = {
   appId: "1:340231895219:web:50fc85275a51d2114998c6"
 };
 
-const GOOGLE_CONFIG = {
-  CLIENT_ID: '736317012952-856e5b7qsgqq346845eb7kgu4qokq49d.apps.googleusercontent.com',
-  PARENT_FOLDER_ID: '1R8zz1X_qmRDMM3X82jI_0lhDLF6qEpTe',
-  SCOPES: 'https://www.googleapis.com/auth/drive'
-};
+const API_URL = process.env.REACT_APP_API_URL || 'https://production-system-lake.vercel.app/api';
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
@@ -41,27 +37,9 @@ const compressImage = (file) => {
   });
 };
 
-const compressBase64 = (base64) => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.src = base64;
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const scale = Math.min(1, 800 / Math.max(img.width, img.height));
-      canvas.width = img.width * scale;
-      canvas.height = img.height * scale;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', 0.4));
-    };
-  });
-};
-
 export default function ProductionSystem() {
   const [appState, setAppState] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
-  const [accessToken, setAccessToken] = useState(null);
-  const [googleReady, setGoogleReady] = useState(false);
   const [loginEmail, setLoginEmail] = useState('op1@company.com');
   const [loginPassword, setLoginPassword] = useState('1234');
   
@@ -90,19 +68,6 @@ export default function ProductionSystem() {
   const fileInputRef = useRef(null);
   const warehouseFileInputRef = useRef(null);
   const streamRef = useRef(null);
-  const tokenClientRef = useRef(null);
-
-  // Inicjalizuj Google Identity Services (NOWA METODA)
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.onload = () => {
-      setGoogleReady(true);
-    };
-    document.body.appendChild(script);
-  }, []);
 
   // Załaduj użytkowników
   useEffect(() => {
@@ -180,7 +145,6 @@ export default function ProductionSystem() {
 
   const handleLogout = () => {
     stopCamera();
-    setAccessToken(null);
     setCurrentUser(null);
     setAppState('login');
     setSelectedOrderId(null);
@@ -204,38 +168,6 @@ export default function ProductionSystem() {
       alert('Błędny email lub hasło');
     }
   };
-
-  // Autoryzuj Google Drive (NOWA METODA - Google Identity Services)
-  const handleAuthorizeGoogle = useCallback(() => {
-    if (!googleReady || !window.google) {
-      alert('Google API jeszcze się ładuje. Poczekaj chwilę i spróbuj ponownie.');
-      return;
-    }
-
-    try {
-      tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
-        client_id: GOOGLE_CONFIG.CLIENT_ID,
-        scope: GOOGLE_CONFIG.SCOPES,
-        callback: (tokenResponse) => {
-          if (tokenResponse && tokenResponse.access_token) {
-            setAccessToken(tokenResponse.access_token);
-            alert('✅ Autoryzacja Google Drive powiodła się!');
-          } else {
-            alert('❌ Autoryzacja nie powiodła się');
-          }
-        },
-        error_callback: (error) => {
-          console.error('Google auth error:', error);
-          alert('❌ Błąd autoryzacji Google: ' + (error.message || JSON.stringify(error)));
-        }
-      });
-
-      tokenClientRef.current.requestAccessToken();
-    } catch (err) {
-      console.error('Google auth error:', err);
-      alert('Błąd autoryzacji: ' + err.message);
-    }
-  }, [googleReady]);
 
   const handleStartOrder = async () => {
     if (!newOrderNum.trim()) {
@@ -494,113 +426,30 @@ export default function ProductionSystem() {
     setConfirmModal(null);
   };
 
-  // Google Drive - upload zdjęcia (NOWA METODA - fetch API)
+  // UPLOAD PRZEZ API - WSZYSCY MOGĄ!
   const uploadPhotoToGoogleDrive = async (orderId, photoBase64, photoNumber) => {
-    if (!accessToken) {
-      alert('❌ Najpierw autoryzuj dostęp do Google Drive!');
-      return false;
-    }
-
     try {
-      // Zamień base64 na Blob
-      const byteCharacters = atob(photoBase64.split(',')[1]);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'image/jpeg' });
-
-      // Sprawdź czy folder zamówienia istnieje
-      const searchResponse = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '${GOOGLE_CONFIG.PARENT_FOLDER_ID}' in parents&spaces=drive&pageSize=1`,
-        {
-          headers: { Authorization: `Bearer ${accessToken}` }
-        }
-      );
-
-      if (!searchResponse.ok) {
-        const errData = await searchResponse.json();
-        throw new Error(errData.error?.message || `Search failed: ${searchResponse.status}`);
-      }
-
-      const searchData = await searchResponse.json();
-      let folderId = null;
-
-      if (searchData.files && searchData.files.length > 0) {
-        folderId = searchData.files[0].id;
-      } else {
-        // Utwórz folder dla tego zamówienia
-        const createFolderResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            name: orderId,
-            mimeType: 'application/vnd.google-apps.folder',
-            parents: [GOOGLE_CONFIG.PARENT_FOLDER_ID]
-          })
-        });
-
-        if (!createFolderResponse.ok) {
-          const errData = await createFolderResponse.json();
-          throw new Error(errData.error?.message || 'Folder creation failed');
-        }
-
-        const folderData = await createFolderResponse.json();
-        folderId = folderData.id;
-      }
-
-      // Upload zdjęcia
-      const fileName = `${orderId}_${photoNumber}.jpg`;
-      const metadata = {
-        name: fileName,
-        mimeType: 'image/jpeg',
-        parents: [folderId]
-      };
-
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      form.append('file', blob);
-
-      const uploadResponse = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', {
+      const response = await fetch(`${API_URL}/upload`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        },
-        body: form
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId, photoBase64, photoNumber })
       });
 
-      if (!uploadResponse.ok) {
-        const errData = await uploadResponse.json();
-        throw new Error(errData.error?.message || `Upload failed: ${uploadResponse.status}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `Upload failed: ${response.status}`);
       }
 
-      const uploadData = await uploadResponse.json();
-      console.log('✅ Uploaded:', uploadData.name, uploadData.id);
       return true;
     } catch (err) {
-      console.error('Google Drive upload error:', err);
-      
-      // Jeśli token wygasł - odśwież
-      if (err.message && err.message.includes('401')) {
-        setAccessToken(null);
-        alert('⚠️ Token wygasł. Kliknij "Autoryzuj Google Drive" ponownie.');
-      } else {
-        alert('Błąd uploadu: ' + err.message);
-      }
+      console.error('Upload error:', err);
+      alert('❌ Błąd uploadu: ' + err.message);
       return false;
     }
   };
 
   const handleStartWarehousePhoto = (orderId) => {
-    if (!accessToken) {
-      alert('⚠️ Najpierw autoryzuj dostęp do Google Drive!');
-      return;
-    }
-
     setPhotoSession({
       orderId,
       photos: [],
@@ -640,7 +489,6 @@ export default function ProductionSystem() {
     }
   };
 
-  // Upload wybranego pliku z dysku
   const handleWarehouseFileChange = async (e) => {
     const file = e.target.files?.[0];
     if (file && photoSession) {
@@ -782,7 +630,6 @@ export default function ProductionSystem() {
         .btn-success { border-color: #4CAF50; color: #4CAF50; }
         .btn-danger { border-color: #f44336; color: #f44336; }
         .btn-primary { border-color: #2196F3; color: #2196F3; }
-        .btn-warning { border-color: #ff9800; color: #ff9800; }
         .form-group { margin-bottom: 1rem; }
         .form-group label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 6px; }
         .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
@@ -816,14 +663,13 @@ export default function ProductionSystem() {
         .button-group { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
         .sync-badge { display: inline-block; padding: 4px 8px; background: #4CAF50; color: white; border-radius: 4px; font-size: 10px; margin-left: 0.5rem; }
         .photo-counter { display: inline-block; padding: 6px 12px; background: #2196F3; color: white; border-radius: 4px; font-weight: bold; margin-top: 0.5rem; }
-        .google-status { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>🏭 System Zamówień<span className="sync-badge">☁️ LIVE</span></h1>
+            <h1 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>🏭 System Zamówień<span className="sync-badge">☁️ V13</span></h1>
             <div className="form-group">
               <label>Email</label>
               <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="op1@company.com" />
@@ -838,7 +684,7 @@ export default function ProductionSystem() {
             <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo:</p>
             <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>op1@company.com / 1234 (Operator)</p>
             <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>admin@company.com / 1234 (Admin)</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#ff6b6b' }}>⚠️ Magazynowy - dodaj przez Admina!</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ Backend API + Service Account</p>
           </div>
         </div>
       )}
@@ -876,7 +722,7 @@ export default function ProductionSystem() {
               <h1 style={{ margin: '0 0 4px 0' }}>🏭 System Zamówień</h1>
               <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>
                 Zalogowany: {currentUser.name} ({currentUser.role})
-                {accessToken && <span className="google-status" style={{ background: '#4CAF50', color: 'white', marginLeft: '8px' }}>✓ Drive</span>}
+                <span className="sync-badge">✓ API Ready</span>
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
@@ -939,7 +785,7 @@ export default function ProductionSystem() {
                       <div className="form-group">
                         <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
                       </div>
-                      <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading}>
+                      <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading} style={{ width: '100%' }}>
                         {isLoading ? '⏳' : '✓'} Rozpocznij
                       </button>
                     </div>
@@ -1017,7 +863,7 @@ export default function ProductionSystem() {
                         )}
 
                         {cameraActive && (
-                          <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }} disabled={isLoading}>📸 Zrób zdjęcie</button>
+                          <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem', width: '100%' }} disabled={isLoading}>📸 Zrób zdjęcie</button>
                         )}
 
                         <div className="form-group">
@@ -1064,10 +910,10 @@ export default function ProductionSystem() {
               ) : (
                 readyOrders.map(order => (
                   <div key={order.docId} className="card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '1rem', borderBottom: '1px solid #ddd' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                       <div>
                         <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
+                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
                     </div>
                     <div className="button-group">
@@ -1091,11 +937,8 @@ export default function ProductionSystem() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
                         <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
-                      <div className="button-group">
-                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
-                      </div>
+                      <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                     </div>
                   </div>
                 ))
@@ -1114,11 +957,8 @@ export default function ProductionSystem() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
                         <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
-                      <div className="button-group">
-                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
-                      </div>
+                      <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                     </div>
                   </div>
                 ))
@@ -1129,19 +969,10 @@ export default function ProductionSystem() {
           {activeTab === 'photos' && (
             <div>
               <h2>📸 Zdjęcia zamówień ({readyOrders.length})</h2>
-              
-              {!accessToken && (
-                <div className="card" style={{ background: '#fff3cd', borderLeft: '3px solid #ff9800' }}>
-                  <p style={{ margin: '0 0 1rem 0', color: '#333' }}>⚠️ Aby przesyłać zdjęcia na Google Drive, musisz najpierw autoryzować dostęp.</p>
-                  <button className="btn btn-warning" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ width: '100%', padding: '12px', fontSize: '15px' }}>
-                    {isLoading ? '⏳ Autoryzuję...' : '🔐 Autoryzuj Google Drive'}
-                  </button>
-                </div>
-              )}
+              <div className="success-box">✅ Wszyscy mogą uploadować - bez Google Auth!</div>
 
-              {accessToken && !photoSession && (
+              {!photoSession ? (
                 <>
-                  <div className="success-box" style={{ marginBottom: '1rem' }}>✅ Google Drive autoryzowany - możesz robić zdjęcia!</div>
                   {readyOrders.length === 0 ? (
                     <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień do sfotografowania</div>
                   ) : (
@@ -1158,9 +989,7 @@ export default function ProductionSystem() {
                     ))
                   )}
                 </>
-              )}
-
-              {accessToken && photoSession && (
+              ) : (
                 <div className="card">
                   <h3 style={{ marginBottom: '1rem' }}>Fotografowanie zamówienia #{photoSession.orderId}</h3>
                   
@@ -1175,13 +1004,13 @@ export default function ProductionSystem() {
                     </button>
                   ) : (
                     <button className="btn btn-success" onClick={handleTakeWarehousePhoto} style={{ width: '100%', marginBottom: '1rem', padding: '12px', fontSize: '15px' }} disabled={isLoading}>
-                      {isLoading ? '⏳ Uploadowanie na Drive...' : '📸 Zrób zdjęcie i wyślij na Drive'}
+                      {isLoading ? '⏳ Upload...' : '📸 Zrób zdjęcie'}
                     </button>
                   )}
 
                   <div style={{ marginBottom: '1rem' }}>
                     <button className="btn btn-primary" onClick={() => warehouseFileInputRef.current?.click()} style={{ width: '100%', padding: '12px', fontSize: '15px' }} disabled={isLoading}>
-                      {isLoading ? '⏳ Uploadowanie...' : '📤 Dodaj zdjęcie z dysku'}
+                      {isLoading ? '⏳ Upload...' : '📤 Dodaj z dysku'}
                     </button>
                     <input ref={warehouseFileInputRef} type="file" accept="image/*" onChange={handleWarehouseFileChange} style={{ display: 'none' }} disabled={isLoading} />
                   </div>
@@ -1192,10 +1021,10 @@ export default function ProductionSystem() {
 
                   {photoSession.photos.length > 0 && (
                     <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
-                      <p style={{ fontSize: '12px', fontWeight: 'bold' }}>Zapisane na Google Drive:</p>
-                      {photoSession.photos.map((photo, idx) => (
-                        <div key={idx} style={{ marginBottom: '0.5rem', fontSize: '12px', color: '#4CAF50' }}>
-                          ✅ {photoSession.orderId}_{idx + 1}.jpg
+                      <p style={{ fontSize: '12px', fontWeight: 'bold' }}>✅ Wysłane:</p>
+                      {photoSession.photos.map((_, idx) => (
+                        <div key={idx} style={{ fontSize: '12px', color: '#4CAF50' }}>
+                          ✓ {photoSession.orderId}_{idx + 1}.jpg
                         </div>
                       ))}
                     </div>
@@ -1238,14 +1067,13 @@ export default function ProductionSystem() {
             <div>
               <h2>Archiwum ({archivedOrders.length})</h2>
               {archivedOrders.length === 0 ? (
-                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zarchiwizowanych zamówień</div>
+                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zarchiwizowanych</div>
               ) : (
                 archivedOrders.map(order => (
                   <div key={order.docId} className="card">
                     <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
-                    <div style={{ fontSize: '12px', color: '#666', marginBottom: '6px' }}>{new Date(order.createdAt).toLocaleString('pl-PL')}</div>
                     {order.warehousePhotos && (
-                      <div style={{ fontSize: '11px', color: '#4CAF50' }}>📸 {order.warehousePhotos} zdjęć na Google Drive</div>
+                      <div style={{ fontSize: '11px', color: '#4CAF50' }}>📸 {order.warehousePhotos} zdjęć</div>
                     )}
                   </div>
                 ))
@@ -1255,7 +1083,7 @@ export default function ProductionSystem() {
         </div>
       )}
 
-      {appState === 'settings' && currentUser && currentUser.role === 'admin' && (
+      {appState === 'settings' && currentUser?.role === 'admin' && (
         <div>
           <div className="header">
             <h1 style={{ margin: '0' }}>⚙️ Ustawienia</h1>
@@ -1267,32 +1095,26 @@ export default function ProductionSystem() {
               <h3>Email powiadomień</h3>
               <div className="card">
                 <div className="form-group">
-                  <label>Adres email</label>
                   <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} disabled={isLoading} />
                 </div>
-                <button className="btn btn-success" onClick={handleUpdateEmail} disabled={isLoading}>Zapisz</button>
-                <p style={{ fontSize: '12px', color: '#666', marginTop: '1rem' }}>Aktualny: {settings.notificationEmail}</p>
+                <button className="btn btn-success" onClick={handleUpdateEmail} disabled={isLoading} style={{ width: '100%' }}>Zapisz</button>
               </div>
             </div>
 
             <div>
-              <h3>Zarządzanie pracownikami</h3>
+              <h3>Pracownicy</h3>
               <div className="card">
-                <h4 style={{ margin: '0 0 1rem 0' }}>Dodaj nowego pracownika</h4>
+                <h4 style={{ margin: '0 0 1rem 0' }}>Dodaj nowego</h4>
                 <div className="form-group">
-                  <label>Imię i nazwisko</label>
-                  <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Jan Kowalski" disabled={isLoading} />
+                  <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Imię" disabled={isLoading} />
                 </div>
                 <div className="form-group">
-                  <label>Email</label>
-                  <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="jan@company.com" disabled={isLoading} />
+                  <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="Email" disabled={isLoading} />
                 </div>
                 <div className="form-group">
-                  <label>Hasło</label>
-                  <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="1234" disabled={isLoading} />
+                  <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="Hasło" disabled={isLoading} />
                 </div>
                 <div className="form-group">
-                  <label>Rola</label>
                   <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} disabled={isLoading}>
                     <option value="operator">Operator</option>
                     <option value="order_admin">Admin Jakości</option>
@@ -1300,20 +1122,18 @@ export default function ProductionSystem() {
                     <option value="admin">Administrator</option>
                   </select>
                 </div>
-                <button className="btn btn-success" onClick={handleAddUser} disabled={isLoading}>Dodaj pracownika</button>
+                <button className="btn btn-success" onClick={handleAddUser} disabled={isLoading} style={{ width: '100%' }}>Dodaj</button>
 
-                <h4 style={{ margin: '1.5rem 0 1rem 0' }}>Aktualni pracownicy</h4>
+                <h4 style={{ margin: '1.5rem 0 1rem 0' }}>Lista</h4>
                 {users.filter(u => !u.deleted).map(u => (
                   <div key={u.id} className="user-row">
-                    <div className="user-info">
-                      <div style={{ fontWeight: 'bold' }}>{u.name}</div>
-                      <div style={{ fontSize: '12px', color: '#666' }}>{u.email}</div>
-                      <span className="user-role">
-                        {u.role === 'order_admin' ? 'Admin Jakości' : u.role === 'warehouse' ? 'Magazynowy' : u.role === 'admin' ? 'Administrator' : 'Operator'}
-                      </span>
+                    <div>
+                      <strong>{u.name}</strong><br/>
+                      <span style={{ fontSize: '11px', color: '#666' }}>{u.email}</span>
+                      <span className="user-role">{u.role}</span>
                     </div>
                     {u.id !== currentUser.uid && (
-                      <button className="btn btn-danger" onClick={() => handleDeleteUser(u.id)} disabled={isLoading}>Usuń</button>
+                      <button className="btn btn-danger" onClick={() => handleDeleteUser(u.id)} disabled={isLoading}>X</button>
                     )}
                   </div>
                 ))}
