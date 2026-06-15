@@ -43,6 +43,7 @@ export default function ProductionSystem() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
+  const streamRef = useRef(null);
 
   // Załaduj użytkowników
   useEffect(() => {
@@ -80,14 +81,36 @@ export default function ProductionSystem() {
     return () => unsubscribe();
   }, []);
 
-  // CZYŚĆ STATE gdy zmieni się selectedOrderId
+  // CZYŚĆ STATE i WYŁĄCZ KAMERĘ gdy zmieni się selectedOrderId
   useEffect(() => {
     if (selectedOrderId === null) {
       setIssueDesc('');
       setIssuePhoto(null);
       setIssuePhotoFile(null);
+      // STOP streama kamery
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
     }
   }, [selectedOrderId]);
+
+  // WYŁĄCZ KAMERĘ przy logout
+  const handleLogout = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCurrentUser(null);
+    setAppState('login');
+    setSelectedOrderId(null);
+  };
 
   const handleLogin = async () => {
     if (!loginEmail || !loginPassword) {
@@ -102,12 +125,6 @@ export default function ProductionSystem() {
     } else {
       alert('Błędny email lub hasło');
     }
-  };
-
-  const handleLogout = () => {
-    setCurrentUser(null);
-    setAppState('login');
-    setSelectedOrderId(null);
   };
 
   const handleStartOrder = async () => {
@@ -151,6 +168,7 @@ export default function ProductionSystem() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' }
       });
+      streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
@@ -165,6 +183,11 @@ export default function ProductionSystem() {
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
       const photoData = canvasRef.current.toDataURL('image/jpeg');
       setIssuePhoto(photoData);
+      
+      // Konwertuj canvas do blob
+      canvasRef.current.toBlob((blob) => {
+        setIssuePhotoFile(blob);
+      }, 'image/jpeg');
     }
   };
 
@@ -197,18 +220,25 @@ export default function ProductionSystem() {
       // Upload zdjęcia do Firebase Storage
       if (issuePhotoFile) {
         try {
-          const storageRef = ref(storage, `problems/${Date.now()}-${issuePhotoFile.name}`);
+          const timestamp = Date.now();
+          const fileName = `${timestamp}-${Math.random().toString(36).substr(2, 9)}.jpg`;
+          const storageRef = ref(storage, `problems/${fileName}`);
+          
+          console.log('Uploading file to:', storageRef.fullPath);
           await uploadBytes(storageRef, issuePhotoFile);
+          console.log('Upload successful');
+          
           photoURL = await getDownloadURL(storageRef);
+          console.log('Download URL:', photoURL);
         } catch (uploadErr) {
           console.error('Błąd uploadu zdjęcia:', uploadErr);
-          alert('Błąd uploadu zdjęcia, ale dodawam problem bez zdjęcia');
+          alert('Błąd uploadu zdjęcia. Dodaję problem bez zdjęcia.');
         }
       }
 
       const problem = {
         id: Date.now(),
-        photoURL: photoURL,
+        photoURL: photoURL || null,
         description: issueDesc,
         cut: false,
         repaired: false,
@@ -619,7 +649,9 @@ export default function ProductionSystem() {
                         <h4 style={{ marginBottom: '0.75rem' }}>Błędy:</h4>
                         {selectedOrder.problems.map(p => (
                           <div key={p.id} className="problem-row">
-                            {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem photo" />}
+                            {p.photoURL && (
+                              <img src={p.photoURL} className="photo-preview" alt="Problem" onError={(e) => console.error('Error loading image:', e)} />
+                            )}
                             <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                             <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
                             <div className="checkbox-group">
@@ -804,7 +836,9 @@ export default function ProductionSystem() {
                       <h4 style={{ marginBottom: '0.75rem' }}>Naprawiane elementy:</h4>
                       {selectedOrder.problems.map(p => (
                         <div key={p.id} className="problem-row">
-                          {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem photo" />}
+                          {p.photoURL && (
+                            <img src={p.photoURL} className="photo-preview" alt="Problem" onError={(e) => console.error('Error loading image:', e)} />
+                          )}
                           <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                           <p style={{ margin: '0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
                         </div>
