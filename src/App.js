@@ -57,6 +57,7 @@ export default function ProductionSystem() {
   
   const [activeTab, setActiveTab] = useState('orders');
   const [confirmModal, setConfirmModal] = useState(null);
+  const [moveConfirmModal, setMoveConfirmModal] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -121,7 +122,6 @@ export default function ProductionSystem() {
     if (selectedOrderId === null) {
       setIssueDesc('');
       setIssuePhoto(null);
-      // STOP streama kamery
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
@@ -268,7 +268,6 @@ export default function ProductionSystem() {
         history: updatedHistory
       });
 
-      // CZYSZCZENIE STATE
       setIssuePhoto(null);
       setIssueDesc('');
     } catch (err) {
@@ -346,34 +345,46 @@ export default function ProductionSystem() {
     }
   };
 
-  const handleMoveOrder = async (orderId, newStatus) => {
+  const handleMoveOrderClick = (orderId, type) => {
+    setMoveConfirmModal({
+      orderId,
+      type,
+      message: type === 'pallet' 
+        ? 'Czy zmieniłeś status na dostawa paletowa - Odpowiedz na wiadomość?'
+        : 'Czy zmieniłeś status na dostawa dedykowana o krok. Produkcja zakończona sukcesem?'
+    });
+  };
+
+  const handleMoveOrderConfirm = async (confirmed) => {
+    if (!moveConfirmModal) return;
+
     try {
       setIsLoading(true);
-      const order = orders.find(o => o.id === orderId);
+      const order = orders.find(o => o.id === moveConfirmModal.orderId);
       if (!order) return;
 
-      const statusNames = { pallet: 'Paletowy', dedicated: 'Dedykowana', archived: 'Archiwum' };
-      
-      const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, {
-        status: newStatus,
-        history: [...order.history, {
-          timestamp: new Date().toLocaleString('pl-PL'),
-          user: currentUser?.name || 'Unknown',
-          action: `Przeniesiono do: ${statusNames[newStatus]}`
-        }]
-      });
+      if (confirmed) {
+        const orderRef = doc(db, 'orders', order.docId);
+        await updateDoc(orderRef, {
+          status: moveConfirmModal.type,
+          history: [...order.history, {
+            timestamp: new Date().toLocaleString('pl-PL'),
+            user: currentUser?.name || 'Unknown',
+            action: `Przeniesiono do: ${moveConfirmModal.type === 'pallet' ? 'Paletowy' : 'Dedykowana'}`
+          }]
+        });
 
-      if (newStatus === 'archived') {
-        alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${orderId} zostało całkowicie wyprodukowane!"`);
+        alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${order.id} zostało całkowicie wyprodukowane!"`);
+        setSelectedOrderId(null);
+      } else {
+        alert('Zamówienie pozostaje w folderze Gotowe - zmień status w Prestashop i wykonaj operację ponownie');
       }
-
-      setSelectedOrderId(null);
     } catch (err) {
       console.error('Błąd:', err);
       alert('Błąd przeniesienia zamówienia');
     } finally {
       setIsLoading(false);
+      setMoveConfirmModal(null);
     }
   };
 
@@ -504,7 +515,6 @@ export default function ProductionSystem() {
         .stat-label { font-size: 11px; color: #666; margin-top: 4px; }
         .warning-box { background: #fff3cd; border-left: 3px solid #ff9800; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
         .success-box { background: #d4edda; border-left: 3px solid #4CAF50; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
-        .info-box { background: #d1ecf1; border-left: 3px solid #17a2b8; padding: 0.75rem; border-radius: 4px; margin-top: 1rem; font-size: 12px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; background: white; padding: 1rem; border-radius: 8px; border: 1px solid #ddd; }
         .photo-preview { max-width: 100%; max-height: 200px; border-radius: 4px; margin-top: 8px; }
         .video-container { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
@@ -518,7 +528,7 @@ export default function ProductionSystem() {
         .user-info { flex: 1; }
         .user-role { display: inline-block; padding: 3px 8px; background: #e3f2fd; color: #2196F3; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 0.5rem; }
         .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-        .modal-content { background: white; padding: 2rem; border-radius: 8px; text-align: center; max-width: 400px; }
+        .modal-content { background: white; padding: 2rem; border-radius: 8px; text-align: center; max-width: 450px; }
         .modal-buttons { display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem; }
         .button-group { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
         .sync-badge { display: inline-block; padding: 4px 8px; background: #4CAF50; color: white; border-radius: 4px; font-size: 10px; margin-left: 0.5rem; }
@@ -554,6 +564,19 @@ export default function ProductionSystem() {
             <div className="modal-buttons">
               <button className="btn btn-success" onClick={handleConfirmRevert} disabled={isLoading}>Tak</button>
               <button className="btn btn-danger" onClick={() => setConfirmModal(null)} disabled={isLoading}>Nie</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {moveConfirmModal && (
+        <div className="modal">
+          <div className="modal-content">
+            <h2>Potwierdzenie</h2>
+            <p style={{ marginTop: '1rem', marginBottom: '1rem', fontSize: '14px' }}>{moveConfirmModal.message}</p>
+            <div className="modal-buttons">
+              <button className="btn btn-success" onClick={() => handleMoveOrderConfirm(true)} disabled={isLoading}>Tak</button>
+              <button className="btn btn-danger" onClick={() => handleMoveOrderConfirm(false)} disabled={isLoading}>Nie</button>
             </div>
           </div>
         </div>
@@ -761,8 +784,8 @@ export default function ProductionSystem() {
                       </div>
                     )}
                     <div className="button-group">
-                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'pallet')} disabled={isLoading}>🎨 Paletowy</button>
-                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'dedicated')} disabled={isLoading}>📦 Dedykowana</button>
+                      <button className="btn btn-primary" onClick={() => handleMoveOrderClick(order.id, 'pallet')} disabled={isLoading}>🎨 Paletowy</button>
+                      <button className="btn btn-primary" onClick={() => handleMoveOrderClick(order.id, 'dedicated')} disabled={isLoading}>📦 Dedykowana</button>
                     </div>
                   </div>
                 ))
@@ -784,7 +807,7 @@ export default function ProductionSystem() {
                         <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
                       <div className="button-group">
-                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')} disabled={isLoading}>✓ Potwierdzić</button>
+                        <button className="btn btn-success" onClick={() => handleMoveOrderClick(order.id, 'pallet')} disabled={isLoading}>✓ Potwierdzić</button>
                         <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                       </div>
                     </div>
@@ -808,7 +831,7 @@ export default function ProductionSystem() {
                         <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
                       <div className="button-group">
-                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')} disabled={isLoading}>✓ Potwierdzić</button>
+                        <button className="btn btn-success" onClick={() => handleMoveOrderClick(order.id, 'dedicated')} disabled={isLoading}>✓ Potwierdzić</button>
                         <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                       </div>
                     </div>
