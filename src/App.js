@@ -48,7 +48,7 @@ class FirebaseManager {
       ...orderData,
       createdAt: new Date().toISOString(),
       problems: [],
-      status: 'in_progress', // in_progress, ready, archived
+      status: 'in_progress',
       history: [{
         timestamp: new Date().toLocaleString('pl-PL'),
         user: this.currentUser?.name || 'Unknown',
@@ -113,6 +113,7 @@ export default function ProductionSystem() {
   const [newUserRole, setNewUserRole] = useState('operator');
   
   const [activeTab, setActiveTab] = useState('orders');
+  const [confirmModal, setConfirmModal] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -264,11 +265,11 @@ export default function ProductionSystem() {
       return;
     }
 
-    order.status = 'ready'; // Zamówienie przechodzi do "Gotowe"
+    order.status = 'ready';
     order.history.push({
       timestamp: new Date().toLocaleString('pl-PL'),
       user: currentUser?.name || 'Unknown',
-      action: 'Zamówienie zakończone - oczekuje na zmianę statusu'
+      action: 'Zamówienie zakończone - oczekuje na wybór typu'
     });
 
     await firebaseManager.updateOrder(order.id, order);
@@ -276,21 +277,43 @@ export default function ProductionSystem() {
     setSelectedOrderId(null);
   };
 
-  const handleConfirmStatus = async (orderId) => {
+  const handleMoveOrder = async (orderId, newStatus) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
 
-    order.status = 'archived';
+    const statusNames = { pallet: 'Paletowy', dedicated: 'Dedykowana', archived: 'Archiwum' };
+    
+    order.status = newStatus;
     order.history.push({
       timestamp: new Date().toLocaleString('pl-PL'),
       user: currentUser?.name || 'Unknown',
-      action: 'Status zmieniony w sklepie - Zamówienie zarchiwizowane'
+      action: `Przeniesiono do: ${statusNames[newStatus]}`
     });
 
-    alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${orderId} zostało całkowicie wyprodukowane i wysłane!"`);
+    if (newStatus === 'archived') {
+      alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${orderId} zostało całkowicie wyprodukowane!"`);
+    }
 
     await firebaseManager.updateOrder(order.id, order);
     setOrders([...orders]);
+    setSelectedOrderId(null);
+  };
+
+  const handleConfirmRevert = async () => {
+    if (confirmModal?.action === 'revert') {
+      const order = orders.find(o => o.id === confirmModal.orderId);
+      if (order) {
+        order.status = 'ready';
+        order.history.push({
+          timestamp: new Date().toLocaleString('pl-PL'),
+          user: currentUser?.name || 'Unknown',
+          action: 'Cofnięto do folderu Gotowe'
+        });
+        await firebaseManager.updateOrder(order.id, order);
+        setOrders([...orders]);
+      }
+    }
+    setConfirmModal(null);
   };
 
   const handleAddUser = async () => {
@@ -328,23 +351,23 @@ export default function ProductionSystem() {
     alert('Email zaktualizowany!');
   };
 
-  // Filtrowanie zamówień wg statusu
   const inProgressOrders = orders.filter(o => o.status === 'in_progress');
   const readyOrders = orders.filter(o => o.status === 'ready');
+  const palletOrders = orders.filter(o => o.status === 'pallet');
+  const dedicatedOrders = orders.filter(o => o.status === 'dedicated');
   const archivedOrders = orders.filter(o => o.status === 'archived');
   
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
   const unrepairedCount = orders.reduce((sum, o) => sum + o.problems.filter(p => !(p.cut && p.repaired)).length, 0);
 
-  // Określenie widocznych zakładek zg rolą
   const getTabs = () => {
     if (!currentUser) return [];
     if (currentUser.role === 'operator') {
-      return ['orders']; // Tylko "Zamówienia"
+      return ['orders'];
     } else if (currentUser.role === 'order_admin') {
-      return ['orders', 'ready']; // "Zamówienia" + "Gotowe"
+      return ['orders', 'ready', 'pallet', 'dedicated'];
     } else if (currentUser.role === 'admin') {
-      return ['orders', 'ready', 'archive']; // Wszystkie 3
+      return ['orders', 'ready', 'pallet', 'dedicated', 'archive'];
     }
     return [];
   };
@@ -387,6 +410,10 @@ export default function ProductionSystem() {
         .user-row { background: #f9f9f9; padding: 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
         .user-info { flex: 1; }
         .user-role { display: inline-block; padding: 3px 8px; background: #e3f2fd; color: #2196F3; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 0.5rem; }
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-content { background: white; padding: 2rem; border-radius: 8px; text-align: center; max-width: 400px; }
+        .modal-buttons { display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem; }
+        .button-group { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
@@ -404,6 +431,19 @@ export default function ProductionSystem() {
             </div>
             <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleLogin}>Zaloguj się</button>
             <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo: op1@company.com / 1234</p>
+          </div>
+        </div>
+      )}
+
+      {confirmModal && (
+        <div className="modal">
+          <div className="modal-content">
+            <h2>Potwierdzenie</h2>
+            <p style={{ marginTop: '1rem', marginBottom: '1rem' }}>Czy napewno chcesz cofnąć zamówienie do folderu Gotowe?</p>
+            <div className="modal-buttons">
+              <button className="btn btn-success" onClick={handleConfirmRevert}>Tak</button>
+              <button className="btn btn-danger" onClick={() => setConfirmModal(null)}>Nie</button>
+            </div>
           </div>
         </div>
       )}
@@ -448,6 +488,12 @@ export default function ProductionSystem() {
             )}
             {visibleTabs.includes('ready') && (
               <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => setActiveTab('ready')}>📋 Gotowe</button>
+            )}
+            {visibleTabs.includes('pallet') && (
+              <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => setActiveTab('pallet')}>🎨 Paletowy</button>
+            )}
+            {visibleTabs.includes('dedicated') && (
+              <button className={`tab-btn ${activeTab === 'dedicated' ? 'active' : ''}`} onClick={() => setActiveTab('dedicated')}>📦 Dedykowana</button>
             )}
             {visibleTabs.includes('archive') && (
               <button className={`tab-btn ${activeTab === 'archive' ? 'active' : ''}`} onClick={() => setActiveTab('archive')}>📂 Archiwum</button>
@@ -552,13 +598,7 @@ export default function ProductionSystem() {
                           <div className="warning-box">⚠️ Czekasz na naprawę {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
                         )}
 
-                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length === 0 && (
-                          <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)}>
-                            ✓ Zlecenie zakończone
-                          </button>
-                        )}
-
-                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && selectedOrder.problems.length > 0 && (
+                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && (
                           <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)}>
                             ✓ Zlecenie zakończone
                           </button>
@@ -594,12 +634,9 @@ export default function ProductionSystem() {
                         <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
                         <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
-                      {currentUser.role === 'order_admin' && (
-                        <button className="btn btn-success" onClick={() => handleConfirmStatus(order.id)}>✓ Zmieniony w sklepie</button>
-                      )}
                     </div>
                     {order.problems.length > 0 && (
-                      <div>
+                      <div style={{ marginBottom: '1rem' }}>
                         <p style={{ fontSize: '12px', color: '#666', marginBottom: '0.5rem' }}>Naprawiane elementy:</p>
                         <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '13px' }}>
                           {order.problems.map(p => (
@@ -608,6 +645,58 @@ export default function ProductionSystem() {
                         </ul>
                       </div>
                     )}
+                    <div className="button-group">
+                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'pallet')}>🎨 Paletowy</button>
+                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'dedicated')}>📦 Dedykowana</button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {activeTab === 'pallet' && (
+            <div>
+              <h2>Paletowy ({palletOrders.length})</h2>
+              {palletOrders.length === 0 ? (
+                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień</div>
+              ) : (
+                palletOrders.map(order => (
+                  <div key={order.id} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '1rem', borderBottom: '1px solid #ddd' }}>
+                      <div>
+                        <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
+                      </div>
+                      <div className="button-group">
+                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')}>✓ Potwierdzić</button>
+                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })}>↶ Cofnij</button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {activeTab === 'dedicated' && (
+            <div>
+              <h2>Dedykowana ({dedicatedOrders.length})</h2>
+              {dedicatedOrders.length === 0 ? (
+                <div className="card" style={{ textAlign: 'center', color: '#999' }}>Brak zamówień</div>
+              ) : (
+                dedicatedOrders.map(order => (
+                  <div key={order.id} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '1rem', borderBottom: '1px solid #ddd' }}>
+                      <div>
+                        <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                        <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
+                      </div>
+                      <div className="button-group">
+                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')}>✓ Potwierdzić</button>
+                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })}>↶ Cofnij</button>
+                      </div>
+                    </div>
                   </div>
                 ))
               )}
