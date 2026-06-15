@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDKUns-Jmw1RR9afnymTKF1xdjImHJGkNU",
@@ -9,90 +12,11 @@ const FIREBASE_CONFIG = {
   appId: "1:340231895219:web:50fc85275a51d2114998c6"
 };
 
-class FirebaseManager {
-  constructor(config) {
-    this.config = config;
-    this.currentUser = null;
-    this.ordersCache = [];
-    this.usersCache = [];
-  }
-
-  async init() {
-    console.log('Firebase initialized:', this.config.projectId);
-  }
-
-  async login(email, password) {
-    const user = this.usersCache.find(u => u.email === email && u.password === password);
-    if (user) {
-      return { uid: user.id, email: user.email, name: user.name, role: user.role };
-    }
-    return null;
-  }
-
-  async getOrders() {
-    const stored = localStorage.getItem('orders-' + this.config.projectId);
-    this.ordersCache = stored ? JSON.parse(stored) : [];
-    return this.ordersCache;
-  }
-
-  async updateOrder(orderId, data) {
-    this.ordersCache = this.ordersCache.map(o => o.id === orderId ? { ...o, ...data } : o);
-    localStorage.setItem('orders-' + this.config.projectId, JSON.stringify(this.ordersCache));
-    return this.ordersCache.find(o => o.id === orderId);
-  }
-
-  async createOrder(orderData) {
-    const id = 'order-' + Date.now();
-    const order = {
-      id,
-      ...orderData,
-      createdAt: new Date().toISOString(),
-      problems: [],
-      status: 'in_progress',
-      history: [{
-        timestamp: new Date().toLocaleString('pl-PL'),
-        user: this.currentUser?.name || 'Unknown',
-        action: 'Zamówienie rozpoczęte'
-      }]
-    };
-    this.ordersCache.push(order);
-    localStorage.setItem('orders-' + this.config.projectId, JSON.stringify(this.ordersCache));
-    return order;
-  }
-
-  async getUsers() {
-    const stored = localStorage.getItem('users-' + this.config.projectId);
-    this.usersCache = stored ? JSON.parse(stored) : [
-      { id: 1, name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
-      { id: 2, name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
-      { id: 3, name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
-      { id: 4, name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
-    ];
-    return this.usersCache;
-  }
-
-  async saveUsers() {
-    localStorage.setItem('users-' + this.config.projectId, JSON.stringify(this.usersCache));
-  }
-
-  async addUser(user) {
-    const newUser = {
-      id: Math.max(...this.usersCache.map(u => u.id), 0) + 1,
-      ...user
-    };
-    this.usersCache.push(newUser);
-    await this.saveUsers();
-    return newUser;
-  }
-
-  async deleteUser(userId) {
-    this.usersCache = this.usersCache.filter(u => u.id !== userId);
-    await this.saveUsers();
-  }
-}
+const app = initializeApp(FIREBASE_CONFIG);
+const db = getFirestore(app);
+const storage = getStorage(app);
 
 export default function ProductionSystem() {
-  const [firebaseManager] = useState(new FirebaseManager(FIREBASE_CONFIG));
   const [appState, setAppState] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
   const [loginEmail, setLoginEmail] = useState('op1@company.com');
@@ -106,6 +30,7 @@ export default function ProductionSystem() {
   const [issuePhoto, setIssuePhoto] = useState(null);
   const [settings, setSettings] = useState({ notificationEmail: 'manager@company.com' });
   const [newEmail, setNewEmail] = useState(settings.notificationEmail);
+  const [isLoading, setIsLoading] = useState(false);
   
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
@@ -118,31 +43,71 @@ export default function ProductionSystem() {
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Załaduj użytkowników
   useEffect(() => {
-    const init = async () => {
-      await firebaseManager.init();
-      const loadedOrders = await firebaseManager.getOrders();
-      const loadedUsers = await firebaseManager.getUsers();
-      setOrders(loadedOrders);
-      setUsers(loadedUsers);
+    const loadUsers = async () => {
+      try {
+        const usersRef = collection(db, 'users');
+        const snapshot = await getDocs(usersRef);
+        if (snapshot.empty) {
+          // Jeśli baza pusta, dodaj demo użytkowników
+          const demoUsers = [
+            { name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
+            { name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
+            { name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
+            { name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
+          ];
+          for (const user of demoUsers) {
+            await addDoc(usersRef, user);
+          }
+          setUsers(demoUsers);
+        } else {
+          setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        }
+      } catch (err) {
+        console.error('Błąd załadowania użytkowników:', err);
+      }
     };
-    init();
-  }, [firebaseManager]);
+    loadUsers();
+  }, []);
+
+  // Real-time listen na zamówienia
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'orders'), (snapshot) => {
+      const ordersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setOrders(ordersList);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const handleLogin = async () => {
     if (!loginEmail || !loginPassword) {
       alert('Wpisz email i hasło');
       return;
     }
-    const user = await firebaseManager.login(loginEmail, loginPassword);
-    if (user) {
-      firebaseManager.currentUser = user;
-      setCurrentUser(user);
-      setAppState('dashboard');
-      setActiveTab('orders');
-    } else {
-      alert('Błędny email lub hasło');
+    try {
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('email', '==', loginEmail));
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        alert('Błędny email lub hasło');
+        return;
+      }
+
+      const userDoc = snapshot.docs[0];
+      const user = userDoc.data();
+
+      if (user.password === loginPassword) {
+        setCurrentUser({ uid: userDoc.id, ...user });
+        setAppState('dashboard');
+        setActiveTab('orders');
+      } else {
+        alert('Błędny email lub hasło');
+      }
+    } catch (err) {
+      console.error('Błąd logowania:', err);
+      alert('Błąd logowania: ' + err.message);
     }
   };
 
@@ -157,15 +122,39 @@ export default function ProductionSystem() {
       alert('Wpisz numer zamówienia');
       return;
     }
-    const existing = orders.find(o => o.id === newOrderNum && o.status !== 'archived');
-    if (existing) {
-      alert('To zamówienie już istnieje!');
-      return;
+    
+    try {
+      setIsLoading(true);
+      const ordersRef = collection(db, 'orders');
+      const q = query(ordersRef, where('id', '==', newOrderNum), where('status', '!=', 'archived'));
+      const snapshot = await getDocs(q);
+      
+      if (!snapshot.empty) {
+        alert('To zamówienie już istnieje!');
+        setIsLoading(false);
+        return;
+      }
+
+      await addDoc(ordersRef, {
+        id: newOrderNum,
+        createdAt: new Date().toISOString(),
+        problems: [],
+        status: 'in_progress',
+        history: [{
+          timestamp: new Date().toLocaleString('pl-PL'),
+          user: currentUser?.name || 'Unknown',
+          action: 'Zamówienie rozpoczęte'
+        }]
+      });
+
+      setNewOrderNum('');
+      setSelectedOrderId(newOrderNum);
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd dodania zamówienia');
+    } finally {
+      setIsLoading(false);
     }
-    const order = await firebaseManager.createOrder({ id: newOrderNum });
-    setOrders([...orders, order]);
-    setSelectedOrderId(newOrderNum);
-    setNewOrderNum('');
   };
 
   const handleStartCamera = async () => {
@@ -208,109 +197,163 @@ export default function ProductionSystem() {
     }
     if (!selectedOrderId) return;
 
-    const problem = {
-      id: Date.now(),
-      photo: issuePhoto,
-      description: issueDesc,
-      cut: false,
-      repaired: false,
-      addedBy: currentUser?.name || 'Unknown',
-      addedAt: new Date().toLocaleString('pl-PL')
-    };
+    try {
+      setIsLoading(true);
+      const selectedOrder = orders.find(o => o.id === selectedOrderId);
+      if (!selectedOrder) return;
 
-    const updatedOrder = orders.find(o => o.id === selectedOrderId);
-    if (updatedOrder) {
-      updatedOrder.problems.push(problem);
-      updatedOrder.history.push({
+      const problem = {
+        id: Date.now(),
+        photo: issuePhoto,
+        description: issueDesc,
+        cut: false,
+        repaired: false,
+        addedBy: currentUser?.name || 'Unknown',
+        addedAt: new Date().toLocaleString('pl-PL')
+      };
+
+      const updatedProblems = [...(selectedOrder.problems || []), problem];
+      const updatedHistory = [...(selectedOrder.history || []), {
         timestamp: new Date().toLocaleString('pl-PL'),
         user: currentUser?.name || 'Unknown',
         action: `Dodał problem: "${issueDesc}"`
+      }];
+
+      const orderRef = doc(db, 'orders', selectedOrder.id);
+      await updateDoc(orderRef, {
+        problems: updatedProblems,
+        history: updatedHistory
       });
-      await firebaseManager.updateOrder(updatedOrder.id, updatedOrder);
-      setOrders([...orders]);
+
+      setIssuePhoto(null);
+      setIssueDesc('');
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd dodania problemu');
+    } finally {
+      setIsLoading(false);
     }
-    
-    setIssuePhoto(null);
-    setIssueDesc('');
   };
 
   const handleToggleProblem = async (orderId, problemId, field) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
+    try {
+      setIsLoading(true);
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
 
-    const problem = order.problems.find(p => p.id === problemId);
-    if (!problem) return;
+      const problem = order.problems.find(p => p.id === problemId);
+      if (!problem) return;
 
-    problem[field] = !problem[field];
+      problem[field] = !problem[field];
 
-    if (problem.cut && problem.repaired) {
-      order.problems = order.problems.filter(p => p.id !== problemId);
-      order.history.push({
-        timestamp: new Date().toLocaleString('pl-PL'),
-        user: currentUser?.name || 'Unknown',
-        action: `Rozwiązał problem: "${problem.description}"`
+      let updatedProblems = order.problems;
+      let updatedHistory = [...order.history];
+
+      if (problem.cut && problem.repaired) {
+        updatedProblems = order.problems.filter(p => p.id !== problemId);
+        updatedHistory.push({
+          timestamp: new Date().toLocaleString('pl-PL'),
+          user: currentUser?.name || 'Unknown',
+          action: `Rozwiązał problem: "${problem.description}"`
+        });
+      }
+
+      const orderRef = doc(db, 'orders', order.id);
+      await updateDoc(orderRef, {
+        problems: updatedProblems,
+        history: updatedHistory
       });
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd aktualizacji problemu');
+    } finally {
+      setIsLoading(false);
     }
-
-    await firebaseManager.updateOrder(order.id, order);
-    setOrders([...orders]);
   };
 
   const handleCompleteOrder = async (orderId) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
+    try {
+      setIsLoading(true);
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
 
-    if (order.problems.some(p => !(p.cut && p.repaired))) {
-      alert('Nie możesz zamknąć! Są nienaurawane elementy.');
-      return;
+      if (order.problems.some(p => !(p.cut && p.repaired))) {
+        alert('Nie możesz zamknąć! Są nienaurawane elementy.');
+        setIsLoading(false);
+        return;
+      }
+
+      const orderRef = doc(db, 'orders', order.id);
+      await updateDoc(orderRef, {
+        status: 'ready',
+        history: [...order.history, {
+          timestamp: new Date().toLocaleString('pl-PL'),
+          user: currentUser?.name || 'Unknown',
+          action: 'Zamówienie zakończone - oczekuje na wybór typu'
+        }]
+      });
+
+      setSelectedOrderId(null);
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd zamknięcia zamówienia');
+    } finally {
+      setIsLoading(false);
     }
-
-    order.status = 'ready';
-    order.history.push({
-      timestamp: new Date().toLocaleString('pl-PL'),
-      user: currentUser?.name || 'Unknown',
-      action: 'Zamówienie zakończone - oczekuje na wybór typu'
-    });
-
-    await firebaseManager.updateOrder(order.id, order);
-    setOrders([...orders]);
-    setSelectedOrderId(null);
   };
 
   const handleMoveOrder = async (orderId, newStatus) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
+    try {
+      setIsLoading(true);
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
 
-    const statusNames = { pallet: 'Paletowy', dedicated: 'Dedykowana', archived: 'Archiwum' };
-    
-    order.status = newStatus;
-    order.history.push({
-      timestamp: new Date().toLocaleString('pl-PL'),
-      user: currentUser?.name || 'Unknown',
-      action: `Przeniesiono do: ${statusNames[newStatus]}`
-    });
+      const statusNames = { pallet: 'Paletowy', dedicated: 'Dedykowana', archived: 'Archiwum' };
+      
+      const orderRef = doc(db, 'orders', order.id);
+      await updateDoc(orderRef, {
+        status: newStatus,
+        history: [...order.history, {
+          timestamp: new Date().toLocaleString('pl-PL'),
+          user: currentUser?.name || 'Unknown',
+          action: `Przeniesiono do: ${statusNames[newStatus]}`
+        }]
+      });
 
-    if (newStatus === 'archived') {
-      alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${orderId} zostało całkowicie wyprodukowane!"`);
+      if (newStatus === 'archived') {
+        alert(`✉️ Email wysłany na ${settings.notificationEmail}:\n"Zamówienie nr ${orderId} zostało całkowicie wyprodukowane!"`);
+      }
+
+      setSelectedOrderId(null);
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd przeniesienia zamówienia');
+    } finally {
+      setIsLoading(false);
     }
-
-    await firebaseManager.updateOrder(order.id, order);
-    setOrders([...orders]);
-    setSelectedOrderId(null);
   };
 
   const handleConfirmRevert = async () => {
     if (confirmModal?.action === 'revert') {
-      const order = orders.find(o => o.id === confirmModal.orderId);
-      if (order) {
-        order.status = 'ready';
-        order.history.push({
-          timestamp: new Date().toLocaleString('pl-PL'),
-          user: currentUser?.name || 'Unknown',
-          action: 'Cofnięto do folderu Gotowe'
+      try {
+        setIsLoading(true);
+        const order = orders.find(o => o.id === confirmModal.orderId);
+        if (!order) return;
+
+        const orderRef = doc(db, 'orders', order.id);
+        await updateDoc(orderRef, {
+          status: 'ready',
+          history: [...order.history, {
+            timestamp: new Date().toLocaleString('pl-PL'),
+            user: currentUser?.name || 'Unknown',
+            action: 'Cofnięto do folderu Gotowe'
+          }]
         });
-        await firebaseManager.updateOrder(order.id, order);
-        setOrders([...orders]);
+      } catch (err) {
+        console.error('Błąd:', err);
+        alert('Błąd cofania zamówienia');
+      } finally {
+        setIsLoading(false);
       }
     }
     setConfirmModal(null);
@@ -321,24 +364,42 @@ export default function ProductionSystem() {
       alert('Wypełnij wszystkie pola');
       return;
     }
-    await firebaseManager.addUser({
-      name: newUserName,
-      email: newUserEmail,
-      password: newUserPassword,
-      role: newUserRole
-    });
-    setUsers(firebaseManager.usersCache);
-    setNewUserName('');
-    setNewUserEmail('');
-    setNewUserPassword('');
-    setNewUserRole('operator');
-    alert('Użytkownik dodany!');
+
+    try {
+      setIsLoading(true);
+      await addDoc(collection(db, 'users'), {
+        name: newUserName,
+        email: newUserEmail,
+        password: newUserPassword,
+        role: newUserRole
+      });
+
+      setNewUserName('');
+      setNewUserEmail('');
+      setNewUserPassword('');
+      setNewUserRole('operator');
+      alert('Użytkownik dodany!');
+    } catch (err) {
+      console.error('Błąd:', err);
+      alert('Błąd dodania użytkownika');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleDeleteUser = async (userId) => {
     if (window.confirm('Usunąć tego użytkownika?')) {
-      await firebaseManager.deleteUser(userId);
-      setUsers(firebaseManager.usersCache);
+      try {
+        setIsLoading(true);
+        const userRef = doc(db, 'users', userId);
+        await updateDoc(userRef, { deleted: true });
+        setUsers(users.filter(u => u.id !== userId));
+      } catch (err) {
+        console.error('Błąd:', err);
+        alert('Błąd usunięcia użytkownika');
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -358,7 +419,7 @@ export default function ProductionSystem() {
   const archivedOrders = orders.filter(o => o.status === 'archived');
   
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
-  const unrepairedCount = orders.reduce((sum, o) => sum + o.problems.filter(p => !(p.cut && p.repaired)).length, 0);
+  const unrepairedCount = orders.reduce((sum, o) => sum + (o.problems || []).filter(p => !(p.cut && p.repaired)).length, 0);
 
   const getTabs = () => {
     if (!currentUser) return [];
@@ -380,6 +441,7 @@ export default function ProductionSystem() {
         .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
         .btn { padding: 8px 16px; border: 1px solid #ddd; background: white; border-radius: 8px; cursor: pointer; font-size: 13px; }
         .btn:hover { background: #f0f0f0; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-success { border-color: #4CAF50; color: #4CAF50; }
         .btn-danger { border-color: #f44336; color: #f44336; }
         .btn-primary { border-color: #2196F3; color: #2196F3; }
@@ -414,13 +476,14 @@ export default function ProductionSystem() {
         .modal-content { background: white; padding: 2rem; border-radius: 8px; text-align: center; max-width: 400px; }
         .modal-buttons { display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem; }
         .button-group { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+        .sync-badge { display: inline-block; padding: 4px 8px; background: #4CAF50; color: white; border-radius: 4px; font-size: 10px; margin-left: 0.5rem; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>🏭 System Zamówień</h1>
+            <h1 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>🏭 System Zamówień<span className="sync-badge">☁️ LIVE</span></h1>
             <div className="form-group">
               <label>Email</label>
               <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="op1@company.com" />
@@ -429,8 +492,11 @@ export default function ProductionSystem() {
               <label>Hasło</label>
               <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="1234" />
             </div>
-            <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleLogin}>Zaloguj się</button>
+            <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleLogin} disabled={isLoading}>
+              {isLoading ? '⏳ Zalogowanie...' : 'Zaloguj się'}
+            </button>
             <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo: op1@company.com / 1234</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ Dane synchronizowane z Firebase</p>
           </div>
         </div>
       )}
@@ -441,8 +507,8 @@ export default function ProductionSystem() {
             <h2>Potwierdzenie</h2>
             <p style={{ marginTop: '1rem', marginBottom: '1rem' }}>Czy napewno chcesz cofnąć zamówienie do folderu Gotowe?</p>
             <div className="modal-buttons">
-              <button className="btn btn-success" onClick={handleConfirmRevert}>Tak</button>
-              <button className="btn btn-danger" onClick={() => setConfirmModal(null)}>Nie</button>
+              <button className="btn btn-success" onClick={handleConfirmRevert} disabled={isLoading}>Tak</button>
+              <button className="btn btn-danger" onClick={() => setConfirmModal(null)} disabled={isLoading}>Nie</button>
             </div>
           </div>
         </div>
@@ -510,7 +576,9 @@ export default function ProductionSystem() {
                       <div className="form-group">
                         <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
                       </div>
-                      <button className="btn btn-success" onClick={handleStartOrder}>Rozpocznij</button>
+                      <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading}>
+                        {isLoading ? '⏳' : '✓'} Rozpocznij
+                      </button>
                     </div>
                   </>
                 )}
@@ -520,7 +588,7 @@ export default function ProductionSystem() {
                   <p style={{ textAlign: 'center', color: '#999' }}>Brak aktywnych zamówień</p>
                 ) : (
                   inProgressOrders.map(order => {
-                    const unrepairedProblems = order.problems.filter(p => !(p.cut && p.repaired));
+                    const unrepairedProblems = (order.problems || []).filter(p => !(p.cut && p.repaired));
                     return (
                       <div key={order.id} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                         <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
@@ -539,7 +607,7 @@ export default function ProductionSystem() {
                   <div className="card">
                     <h3 style={{ marginBottom: '1rem' }}>Zamówienie #{selectedOrder.id}</h3>
 
-                    {selectedOrder.problems.length > 0 && (
+                    {selectedOrder.problems && selectedOrder.problems.length > 0 && (
                       <div style={{ marginBottom: '1.5rem' }}>
                         <h4 style={{ marginBottom: '0.75rem' }}>Błędy:</h4>
                         {selectedOrder.problems.map(p => (
@@ -592,15 +660,17 @@ export default function ProductionSystem() {
                           <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..."></textarea>
                         </div>
 
-                        <button className="btn btn-success" onClick={handleAddProblem}>Dodaj błąd</button>
+                        <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading}>
+                          {isLoading ? '⏳' : '✓'} Dodaj błąd
+                        </button>
 
-                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length > 0 && (
-                          <div className="warning-box">⚠️ Czekasz na naprawę {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
+                        {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length > 0 && (
+                          <div className="warning-box">⚠️ Czekasz na naprawę {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length} błędu(ów)</div>
                         )}
 
-                        {selectedOrder.problems.filter(p => !(p.cut && p.repaired)).length === 0 && (
-                          <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)}>
-                            ✓ Zlecenie zakończone
+                        {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length === 0 && (
+                          <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading}>
+                            {isLoading ? '⏳' : '✓'} Zlecenie zakończone
                           </button>
                         )}
                       </>
@@ -608,7 +678,7 @@ export default function ProductionSystem() {
 
                     <h4 style={{ marginTop: '1.5rem', marginBottom: '0.75rem' }}>Historia</h4>
                     <div style={{ background: '#f9f9f9', padding: '0.75rem', borderRadius: '4px', fontSize: '12px', maxHeight: '200px', overflowY: 'auto' }}>
-                      {selectedOrder.history.map((h, i) => (
+                      {(selectedOrder.history || []).map((h, i) => (
                         <div key={i} style={{ paddingBottom: '0.5rem', borderBottom: '1px solid #ddd' }}>
                           <strong>{h.user}</strong> - {h.action}<br />
                           <span style={{ fontSize: '11px', color: '#999' }}>{h.timestamp}</span>
@@ -635,7 +705,7 @@ export default function ProductionSystem() {
                         <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
                     </div>
-                    {order.problems.length > 0 && (
+                    {order.problems && order.problems.length > 0 && (
                       <div style={{ marginBottom: '1rem' }}>
                         <p style={{ fontSize: '12px', color: '#666', marginBottom: '0.5rem' }}>Naprawiane elementy:</p>
                         <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '13px' }}>
@@ -646,8 +716,8 @@ export default function ProductionSystem() {
                       </div>
                     )}
                     <div className="button-group">
-                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'pallet')}>🎨 Paletowy</button>
-                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'dedicated')}>📦 Dedykowana</button>
+                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'pallet')} disabled={isLoading}>🎨 Paletowy</button>
+                      <button className="btn btn-primary" onClick={() => handleMoveOrder(order.id, 'dedicated')} disabled={isLoading}>📦 Dedykowana</button>
                     </div>
                   </div>
                 ))
@@ -669,8 +739,8 @@ export default function ProductionSystem() {
                         <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
                       <div className="button-group">
-                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')}>✓ Potwierdzić</button>
-                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })}>↶ Cofnij</button>
+                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')} disabled={isLoading}>✓ Potwierdzić</button>
+                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                       </div>
                     </div>
                   </div>
@@ -693,8 +763,8 @@ export default function ProductionSystem() {
                         <p style={{ margin: '0', fontSize: '12px', color: '#666' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</p>
                       </div>
                       <div className="button-group">
-                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')}>✓ Potwierdzić</button>
-                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })}>↶ Cofnij</button>
+                        <button className="btn btn-success" onClick={() => handleMoveOrder(order.id, 'archived')} disabled={isLoading}>✓ Potwierdzić</button>
+                        <button className="btn btn-danger" onClick={() => setConfirmModal({ action: 'revert', orderId: order.id })} disabled={isLoading}>↶ Cofnij</button>
                       </div>
                     </div>
                   </div>
@@ -713,7 +783,7 @@ export default function ProductionSystem() {
                   <div key={order.id} className="order-card" onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
                     <div style={{ fontSize: '12px', color: '#666', marginBottom: '6px' }}>Rozpoczęto: {new Date(order.createdAt).toLocaleString('pl-PL')}</div>
-                    {order.problems.length > 0 && (
+                    {order.problems && order.problems.length > 0 && (
                       <div style={{ fontSize: '11px', color: '#666' }}>Naprawianych elementów: {order.problems.length}</div>
                     )}
                   </div>
@@ -724,7 +794,7 @@ export default function ProductionSystem() {
                 <div className="card" style={{ marginTop: '1.5rem' }}>
                   <h3 style={{ marginBottom: '1rem' }}>Szczegóły zamówienia #{selectedOrder.id}</h3>
                   
-                  {selectedOrder.problems.length > 0 && (
+                  {selectedOrder.problems && selectedOrder.problems.length > 0 && (
                     <div style={{ marginBottom: '1.5rem' }}>
                       <h4 style={{ marginBottom: '0.75rem' }}>Naprawiane elementy:</h4>
                       {selectedOrder.problems.map(p => (
@@ -739,7 +809,7 @@ export default function ProductionSystem() {
 
                   <h4 style={{ marginBottom: '0.75rem' }}>Historia:</h4>
                   <div style={{ background: '#f9f9f9', padding: '0.75rem', borderRadius: '4px', fontSize: '12px' }}>
-                    {selectedOrder.history.map((h, i) => (
+                    {(selectedOrder.history || []).map((h, i) => (
                       <div key={i} style={{ paddingBottom: '0.5rem', borderBottom: '1px solid #ddd' }}>
                         <strong>{h.user}</strong> - {h.action}<br />
                         <span style={{ fontSize: '11px', color: '#999' }}>{h.timestamp}</span>
@@ -768,7 +838,7 @@ export default function ProductionSystem() {
                   <label>Adres email</label>
                   <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} />
                 </div>
-                <button className="btn btn-success" onClick={handleUpdateEmail}>Zapisz</button>
+                <button className="btn btn-success" onClick={handleUpdateEmail} disabled={isLoading}>Zapisz</button>
                 <p style={{ fontSize: '12px', color: '#666', marginTop: '1rem' }}>Aktualny: {settings.notificationEmail}</p>
               </div>
             </div>
@@ -797,10 +867,10 @@ export default function ProductionSystem() {
                     <option value="admin">Administrator</option>
                   </select>
                 </div>
-                <button className="btn btn-success" onClick={handleAddUser}>Dodaj pracownika</button>
+                <button className="btn btn-success" onClick={handleAddUser} disabled={isLoading}>Dodaj pracownika</button>
 
                 <h4 style={{ margin: '1.5rem 0 1rem 0' }}>Aktualni pracownicy</h4>
-                {users.map(u => (
+                {users.filter(u => !u.deleted).map(u => (
                   <div key={u.id} className="user-row">
                     <div className="user-info">
                       <div style={{ fontWeight: 'bold' }}>{u.name}</div>
@@ -808,7 +878,7 @@ export default function ProductionSystem() {
                       <span className="user-role">{u.role === 'order_admin' ? 'Admin Jakości' : u.role === 'admin' ? 'Administrator' : 'Operator'}</span>
                     </div>
                     {u.id !== currentUser.uid && (
-                      <button className="btn btn-danger" onClick={() => handleDeleteUser(u.id)}>Usuń</button>
+                      <button className="btn btn-danger" onClick={() => handleDeleteUser(u.id)} disabled={isLoading}>Usuń</button>
                     )}
                   </div>
                 ))}
