@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDKUns-Jmw1RR9afnymTKF1xdjImHJGkNU",
@@ -15,6 +15,30 @@ const FIREBASE_CONFIG = {
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 const storage = getStorage(app);
+
+// Kompresja zdjęcia
+const compressImage = async (file) => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = img.width * 0.5; // Zmniejsz rozdzielczość
+        canvas.height = img.height * 0.5;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          (blob) => resolve(blob),
+          'image/jpeg',
+          0.4 // Quality 40%
+        );
+      };
+    };
+  });
+};
 
 export default function ProductionSystem() {
   const [appState, setAppState] = useState('login');
@@ -98,6 +122,33 @@ export default function ProductionSystem() {
     }
   }, [selectedOrderId]);
 
+  // Usuń zdjęcia gdy zamówienie trafia do archiwum
+  useEffect(() => {
+    const deletePhotosFromArchived = async () => {
+      const archivedOrders = orders.filter(o => o.status === 'archived');
+      for (const order of archivedOrders) {
+        if (order.problems && order.problems.length > 0) {
+          for (const problem of order.problems) {
+            if (problem.photoURL) {
+              try {
+                const photoRef = ref(storage, problem.photoURL);
+                await deleteObject(photoRef);
+              } catch (err) {
+                console.log('Zdjęcie już usunięte lub nie istnieje');
+              }
+            }
+          }
+          // Usuń referencje do zdjęć z bazy
+          const updatedProblems = order.problems.map(p => ({ ...p, photoURL: null }));
+          const orderRef = doc(db, 'orders', order.docId);
+          await updateDoc(orderRef, { problems: updatedProblems });
+        }
+      }
+    };
+    
+    deletePhotosFromArchived();
+  }, [orders]);
+
   // WYŁĄCZ KAMERĘ przy logout
   const handleLogout = () => {
     if (streamRef.current) {
@@ -157,7 +208,7 @@ export default function ProductionSystem() {
       setSelectedOrderId(newOrderNum);
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd dodania zamówienia: ' + err.message);
+      alert('Błąd dodania zamówienia');
     } finally {
       setIsLoading(false);
     }
@@ -181,25 +232,32 @@ export default function ProductionSystem() {
     if (canvasRef.current && videoRef.current) {
       const ctx = canvasRef.current.getContext('2d');
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoData = canvasRef.current.toDataURL('image/jpeg');
+      const photoData = canvasRef.current.toDataURL('image/jpeg', 0.4);
       setIssuePhoto(photoData);
       
-      // Konwertuj canvas do blob
       canvasRef.current.toBlob((blob) => {
         setIssuePhotoFile(blob);
-      }, 'image/jpeg');
+      }, 'image/jpeg', 0.4);
     }
   };
 
-  const handlePhotoChange = (e) => {
+  const handlePhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (file) {
-      setIssuePhotoFile(file);
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setIssuePhoto(event.target?.result);
-      };
-      reader.readAsDataURL(file);
+      try {
+        // Kompresuj zdjęcie
+        const compressedBlob = await compressImage(file);
+        setIssuePhotoFile(compressedBlob);
+        
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          setIssuePhoto(event.target?.result);
+        };
+        reader.readAsDataURL(compressedBlob);
+      } catch (err) {
+        console.error('Błąd kompresji:', err);
+        alert('Błąd kompresji zdjęcia');
+      }
     }
   };
 
@@ -217,21 +275,23 @@ export default function ProductionSystem() {
 
       let photoURL = null;
       
-      // Upload zdjęcia do Firebase Storage
+      // Upload zdjęcia do Firebase Storage (z timeout)
       if (issuePhotoFile) {
         try {
           const timestamp = Date.now();
           const fileName = `${timestamp}-${Math.random().toString(36).substr(2, 9)}.jpg`;
           const storageRef = ref(storage, `problems/${fileName}`);
           
-          console.log('Uploading file to:', storageRef.fullPath);
-          await uploadBytes(storageRef, issuePhotoFile);
-          console.log('Upload successful');
+          // Upload z timeout 30 sekund
+          const uploadPromise = uploadBytes(storageRef, issuePhotoFile);
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Upload timeout')), 30000)
+          );
           
+          await Promise.race([uploadPromise, timeoutPromise]);
           photoURL = await getDownloadURL(storageRef);
-          console.log('Download URL:', photoURL);
         } catch (uploadErr) {
-          console.error('Błąd uploadu zdjęcia:', uploadErr);
+          console.error('Błąd uploadu:', uploadErr);
           alert('Błąd uploadu zdjęcia. Dodaję problem bez zdjęcia.');
         }
       }
@@ -265,7 +325,7 @@ export default function ProductionSystem() {
       setIssueDesc('');
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd dodania problemu: ' + err.message);
+      alert('Błąd dodania problemu');
     } finally {
       setIsLoading(false);
     }
@@ -301,7 +361,7 @@ export default function ProductionSystem() {
       });
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd aktualizacji problemu: ' + err.message);
+      alert('Błąd aktualizacji problemu');
     } finally {
       setIsLoading(false);
     }
@@ -332,7 +392,7 @@ export default function ProductionSystem() {
       setSelectedOrderId(null);
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd zamknięcia zamówienia: ' + err.message);
+      alert('Błąd zamknięcia zamówienia');
     } finally {
       setIsLoading(false);
     }
@@ -363,7 +423,7 @@ export default function ProductionSystem() {
       setSelectedOrderId(null);
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd przeniesienia zamówienia: ' + err.message);
+      alert('Błąd przeniesienia zamówienia');
     } finally {
       setIsLoading(false);
     }
@@ -387,7 +447,7 @@ export default function ProductionSystem() {
         });
       } catch (err) {
         console.error('Błąd:', err);
-        alert('Błąd cofania zamówienia: ' + err.message);
+        alert('Błąd cofania zamówienia');
       } finally {
         setIsLoading(false);
       }
@@ -417,7 +477,7 @@ export default function ProductionSystem() {
       alert('Użytkownik dodany!');
     } catch (err) {
       console.error('Błąd:', err);
-      alert('Błąd dodania użytkownika: ' + err.message);
+      alert('Błąd dodania użytkownika');
     } finally {
       setIsLoading(false);
     }
@@ -432,7 +492,7 @@ export default function ProductionSystem() {
         setUsers(users.filter(u => u.id !== userId));
       } catch (err) {
         console.error('Błąd:', err);
-        alert('Błąd usunięcia użytkownika: ' + err.message);
+        alert('Błąd usunięcia użytkownika');
       } finally {
         setIsLoading(false);
       }
@@ -614,7 +674,7 @@ export default function ProductionSystem() {
                         <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer zamówienia" />
                       </div>
                       <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading}>
-                        {isLoading ? '⏳' : '✓'} Rozpocznij
+                        {isLoading ? '⏳ Chwileczka...' : '✓ Rozpocznij'}
                       </button>
                     </div>
                   </>
@@ -650,17 +710,17 @@ export default function ProductionSystem() {
                         {selectedOrder.problems.map(p => (
                           <div key={p.id} className="problem-row">
                             {p.photoURL && (
-                              <img src={p.photoURL} className="photo-preview" alt="Problem" onError={(e) => console.error('Error loading image:', e)} />
+                              <img src={p.photoURL} className="photo-preview" alt="Problem" />
                             )}
                             <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                             <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
                             <div className="checkbox-group">
                               <label>
-                                <input type="checkbox" checked={p.cut || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} />
+                                <input type="checkbox" checked={p.cut || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} disabled={isLoading} />
                                 Wycięty element
                               </label>
                               <label>
-                                <input type="checkbox" checked={p.repaired || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} />
+                                <input type="checkbox" checked={p.repaired || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} disabled={isLoading} />
                                 Dorobiony
                               </label>
                             </div>
@@ -676,9 +736,9 @@ export default function ProductionSystem() {
                         <div className="form-group">
                           <label>Zdjęcie (z kamery lub plik)</label>
                           <div style={{ marginBottom: '1rem' }}>
-                            <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }}>📷 Włącz kamerę</button>
-                            <button className="btn" onClick={() => fileInputRef.current?.click()}>📤 Prześlij plik</button>
-                            <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} />
+                            <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '8px' }} disabled={isLoading}>📷 Włącz kamerę</button>
+                            <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Prześlij plik</button>
+                            <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} disabled={isLoading} />
                           </div>
                           {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
                         </div>
@@ -689,16 +749,16 @@ export default function ProductionSystem() {
                         </div>
 
                         {videoRef.current?.srcObject && (
-                          <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }}>Zrób zdjęcie</button>
+                          <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }} disabled={isLoading}>Zrób zdjęcie</button>
                         )}
 
                         <div className="form-group">
                           <label>Opis problemu</label>
-                          <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..."></textarea>
+                          <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis..." disabled={isLoading}></textarea>
                         </div>
 
-                        <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading}>
-                          {isLoading ? '⏳' : '✓'} Dodaj błąd
+                        <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading} style={{ width: '100%' }}>
+                          {isLoading ? '⏳ Dodawanie...' : '✓ Dodaj błąd'}
                         </button>
 
                         {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length > 0 && (
@@ -707,7 +767,7 @@ export default function ProductionSystem() {
 
                         {(selectedOrder.problems || []).filter(p => !(p.cut && p.repaired)).length === 0 && (
                           <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading}>
-                            {isLoading ? '⏳' : '✓'} Zlecenie zakończone
+                            {isLoading ? '⏳ Kończę...' : '✓ Zlecenie zakończone'}
                           </button>
                         )}
                       </>
@@ -837,7 +897,7 @@ export default function ProductionSystem() {
                       {selectedOrder.problems.map(p => (
                         <div key={p.id} className="problem-row">
                           {p.photoURL && (
-                            <img src={p.photoURL} className="photo-preview" alt="Problem" onError={(e) => console.error('Error loading image:', e)} />
+                            <img src={p.photoURL} className="photo-preview" alt="Problem" />
                           )}
                           <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                           <p style={{ margin: '0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
@@ -875,7 +935,7 @@ export default function ProductionSystem() {
               <div className="card">
                 <div className="form-group">
                   <label>Adres email</label>
-                  <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} />
+                  <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} disabled={isLoading} />
                 </div>
                 <button className="btn btn-success" onClick={handleUpdateEmail} disabled={isLoading}>Zapisz</button>
                 <p style={{ fontSize: '12px', color: '#666', marginTop: '1rem' }}>Aktualny: {settings.notificationEmail}</p>
@@ -888,19 +948,19 @@ export default function ProductionSystem() {
                 <h4 style={{ margin: '0 0 1rem 0' }}>Dodaj nowego pracownika</h4>
                 <div className="form-group">
                   <label>Imię i nazwisko</label>
-                  <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Jan Kowalski" />
+                  <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Jan Kowalski" disabled={isLoading} />
                 </div>
                 <div className="form-group">
                   <label>Email</label>
-                  <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="jan@company.com" />
+                  <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="jan@company.com" disabled={isLoading} />
                 </div>
                 <div className="form-group">
                   <label>Hasło</label>
-                  <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="1234" />
+                  <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="1234" disabled={isLoading} />
                 </div>
                 <div className="form-group">
                   <label>Rola</label>
-                  <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}>
+                  <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} disabled={isLoading}>
                     <option value="operator">Operator</option>
                     <option value="order_admin">Admin Jakości</option>
                     <option value="admin">Administrator</option>
