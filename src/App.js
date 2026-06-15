@@ -96,15 +96,15 @@ export default function ProductionSystem() {
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    firebaseManager.init();
-    loadOrders();
-  }, []);
-
-  const loadOrders = async () => {
-    const loadedOrders = await firebaseManager.getOrders();
-    setOrders(loadedOrders);
-  };
+    const initFirebase = async () => {
+      await firebaseManager.init();
+      const loadedOrders = await firebaseManager.getOrders();
+      setOrders(loadedOrders);
+    };
+    initFirebase();
+  }, [firebaseManager]);
 
   const handleLogin = async () => {
     if (!loginEmail || !loginPassword) {
@@ -380,7 +380,7 @@ export default function ProductionSystem() {
                       <h4 style={{ marginBottom: '0.75rem' }}>Błędy:</h4>
                       {selectedOrder.problems.map(p => (
                         <div key={p.id} className="problem-row">
-                          {p.photo && <img src={p.photo} className="photo-preview" />}
+                          {p.photo && <img src={p.photo} className="photo-preview" alt="Problem photo" />}
                           <p style={{ margin: '6px 0', fontWeight: 'bold' }}>{p.description}</p>
                           <p style={{ margin: '0 0 0.5rem 0', fontSize: '11px', color: '#666' }}>Dodał: {p.addedBy} o {p.addedAt}</p>
                           <div className="checkbox-group">
@@ -407,7 +407,7 @@ export default function ProductionSystem() {
                       <button className="btn" onClick={() => fileInputRef.current?.click()}>📤 Prześlij plik</button>
                       <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoChange} style={{ display: 'none' }} />
                     </div>
-                    {issuePhoto && <img src={issuePhoto} className="photo-preview" />}
+                    {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
                   </div>
 
                   <div className="video-container" style={{ display: selectedOrder ? 'block' : 'none' }}>
