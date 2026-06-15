@@ -67,6 +67,7 @@ export default function ProductionSystem() {
   const [confirmModal, setConfirmModal] = useState(null);
   const [moveConfirmModal, setMoveConfirmModal] = useState(null);
   const [photoSession, setPhotoSession] = useState(null);
+  const [cameraActive, setCameraActive] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -106,7 +107,6 @@ export default function ProductionSystem() {
               { name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
               { name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
               { name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
-              { name: 'Magazynowy', email: 'mag@company.com', password: '1234', role: 'warehouse' },
               { name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
             ];
             demoUsers.forEach(user => addDoc(usersRef, user));
@@ -155,6 +155,7 @@ export default function ProductionSystem() {
     if (selectedOrderId === null) {
       setIssueDesc('');
       setIssuePhoto(null);
+      setCameraActive(false);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
@@ -167,6 +168,7 @@ export default function ProductionSystem() {
 
   // WYŁĄCZ KAMERĘ przy logout
   const handleLogout = () => {
+    setCameraActive(false);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -251,6 +253,7 @@ export default function ProductionSystem() {
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        setCameraActive(true);
       }
     } catch (err) {
       alert('Brak dostępu do kamery: ' + err.message);
@@ -537,6 +540,7 @@ export default function ProductionSystem() {
       photos: [],
       currentPhoto: null
     });
+    setCameraActive(false);
   };
 
   const handleTakeWarehousePhoto = async () => {
@@ -588,6 +592,7 @@ export default function ProductionSystem() {
 
       alert(`✅ Zamówienie ${photoSession.orderId} zarchiwizowane! ${photoSession.photos.length} zdjęć zostało zapisane na Google Drive.`);
       
+      setCameraActive(false);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
@@ -745,8 +750,10 @@ export default function ProductionSystem() {
             </button>
             <p style={{ fontSize: '11px', textAlign: 'center', color: '#999', marginTop: '1rem' }}>Demo:</p>
             <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>op1@company.com / 1234 (Operator)</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>mag@company.com / 1234 (Magazynowy)</p>
-            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ Google Drive + Firebase</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>qa@company.com / 1234 (Admin Jakości)</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#666' }}>admin@company.com / 1234 (Admin)</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#ff6b6b' }}>⚠️ Magazynowy - dodaj przez Admina!</p>
+            <p style={{ fontSize: '10px', textAlign: 'center', color: '#4CAF50', marginTop: '0.5rem' }}>✓ OAuth Google Drive</p>
           </div>
         </div>
       )}
@@ -914,12 +921,14 @@ export default function ProductionSystem() {
                           {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue photo" />}
                         </div>
 
-                        <div className="video-container" style={{ display: selectedOrder ? 'block' : 'none' }}>
-                          <video ref={videoRef} autoPlay playsInline></video>
-                          <canvas ref={canvasRef} width={640} height={480}></canvas>
-                        </div>
+                        {cameraActive && (
+                          <div className="video-container">
+                            <video ref={videoRef} autoPlay playsInline></video>
+                            <canvas ref={canvasRef} width={640} height={480}></canvas>
+                          </div>
+                        )}
 
-                        {videoRef.current?.srcObject && (
+                        {cameraActive && (
                           <button className="btn btn-success" onClick={handleTakePhoto} style={{ marginBottom: '1rem' }} disabled={isLoading}>Zrób zdjęcie</button>
                         )}
 
@@ -1071,7 +1080,7 @@ export default function ProductionSystem() {
                     <canvas ref={canvasRef} width={640} height={480}></canvas>
                   </div>
 
-                  {!videoRef.current?.srcObject ? (
+                  {!cameraActive ? (
                     <button className="btn btn-primary" onClick={handleStartCamera} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>
                       📷 Włącz kamerę
                     </button>
@@ -1116,6 +1125,7 @@ export default function ProductionSystem() {
                   <button 
                     className="btn btn-danger" 
                     onClick={() => {
+                      setCameraActive(false);
                       if (streamRef.current) {
                         streamRef.current.getTracks().forEach(track => track.stop());
                         streamRef.current = null;
