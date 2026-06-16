@@ -252,6 +252,8 @@ export default function ProductionSystem() {
         createdAt: new Date().toISOString(),
         problems: [],
         status: 'in_progress',
+        photoCount: 0,
+        photoArchived: false,
         history: [{
           timestamp: new Date().toLocaleString('pl-PL'),
           user: currentUser?.name || 'Unknown',
