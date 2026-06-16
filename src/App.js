@@ -274,8 +274,8 @@ export default function ProductionSystem() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { 
           facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
+          width: { max: 1920, min: 640 },
+          height: { max: 1080, min: 480 }
         }
       });
       streamRef.current = stream;
@@ -641,13 +641,15 @@ export default function ProductionSystem() {
   };
 
   const handleDeletePhoto = (indexToDelete) => {
-    if (photoSession) {
-      const newPhotos = photoSession.photos.filter((_, idx) => idx !== indexToDelete);
-      setPhotoSession({
-        orderId: photoSession.orderId,
-        photos: newPhotos,
-        currentPhoto: newPhotos.length > 0 ? newPhotos[newPhotos.length - 1] : null
-      });
+    if (window.confirm('Usunąć to zdjęcie?')) {
+      if (photoSession) {
+        const newPhotos = photoSession.photos.filter((_, idx) => idx !== indexToDelete);
+        setPhotoSession({
+          orderId: photoSession.orderId,
+          photos: newPhotos,
+          currentPhoto: newPhotos.length > 0 ? newPhotos[newPhotos.length - 1] : null
+        });
+      }
     }
   };
     if (!photoSession) return;
@@ -1100,11 +1102,29 @@ export default function ProductionSystem() {
                   </div>
 
                   {photoSession.photos.length > 0 && (
-                    <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
+                    <div style={{ marginTop: '1rem', marginBottom: '1rem', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
+                      <h4>Wysłane zdjęcia:</h4>
                       {photoSession.photos.map((photo, idx) => (
-                        <div key={idx} style={{ fontSize: '12px', color: '#4CAF50', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div key={idx} style={{ 
+                          fontSize: '13px', 
+                          color: '#4CAF50', 
+                          marginBottom: '0.75rem', 
+                          display: 'flex', 
+                          justifyContent: 'space-between', 
+                          alignItems: 'center',
+                          background: '#f0f0f0',
+                          padding: '0.75rem',
+                          borderRadius: '4px'
+                        }}>
                           <span>✓ {photoSession.orderId}_{idx + 1}.jpg</span>
-                          <button className="btn btn-danger" onClick={() => handleDeletePhoto(idx)} disabled={isLoading} style={{ padding: '4px 8px', fontSize: '11px' }}>X</button>
+                          <button 
+                            className="btn btn-danger" 
+                            onClick={() => handleDeletePhoto(idx)} 
+                            disabled={isLoading}
+                            style={{ padding: '6px 12px', fontSize: '12px', fontWeight: 'bold' }}
+                          >
+                            ✕ Usuń
+                          </button>
                         </div>
                       ))}
                     </div>
