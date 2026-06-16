@@ -30,7 +30,8 @@ const ACCESS_FOLDERS = [
   { key: 'raben_manage', label: 'Raben (zarządzanie)' },
   { key: 'transport', label: 'Transporty własne (widok)' },
   { key: 'transport_manage', label: 'Transporty własne (zarządzanie)' },
-  { key: 'archive2', label: 'Archiwum' },
+  { key: 'archive2', label: 'Archiwum zdjęć' },
+  { key: 'archive1', label: 'Archiwum zamówień' },
   { key: 'admin', label: 'Administracja' }
 ];
 
@@ -584,12 +585,22 @@ export default function App() {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
     if (!order.transportDate) { alert('Wybierz datę transportu'); return; }
-    if (!order.attachments || order.attachments.length === 0) { alert('Dodaj załączniki (list przewozowy) przed potwierdzeniem daty'); return; }
     if (!window.confirm(`Potwierdzić datę transportu ${order.transportDate} dla zamówienia #${orderId}?`)) return;
     try {
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { dateConfirmed: true });
-      alert('✅ Data potwierdzona');
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const handleUnconfirmDate = async (orderId) => {
+    if (!window.confirm('Czy na pewno chcesz zmienić potwierdzoną datę?')) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { dateConfirmed: false });
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -662,7 +673,47 @@ export default function App() {
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       const updated = (order.attachments || []).filter((_, i) => i !== attachmentIdx);
-      await updateDoc(orderRef, { attachments: updated, dateConfirmed: updated.length === 0 ? false : order.dateConfirmed });
+      await updateDoc(orderRef, { attachments: updated });
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const handleToggleShipping = async (orderId, field) => {
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { [field]: !(order[field] || false) });
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const handleMoveToArchive = async (orderId) => {
+    if (!window.confirm(`Przenieść zamówienie #${orderId} do archiwum?`)) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { status: 'archived', archivedAt: new Date().toISOString() });
+      alert('✅ Przeniesiono do archiwum');
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const handlePasswordDateEdit = async (orderId) => {
+    const pwd = window.prompt('Wpisz hasło aby zmienić datę:');
+    if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Nieprawidłowe hasło'); return; }
+    const newDate = window.prompt('Nowa data (RRRR-MM-DD):');
+    if (!newDate) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { transportDate: newDate, dateConfirmed: true });
+      alert('✅ Data zmieniona');
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -671,7 +722,7 @@ export default function App() {
   const handleTransferOrder = (orderId, fromStatus) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
-    if (!order.dateConfirmed) { alert('Najpierw potwierdź datę transportu'); return; }
+    if (!order.transportDate) { alert('Najpierw wybierz datę transportu'); return; }
 
     const defaultTarget = fromStatus === 'pallet' ? 'raben' : 'transport';
     const altTarget = fromStatus === 'pallet' ? 'transport' : 'raben';
@@ -703,6 +754,7 @@ export default function App() {
   const archive2Orders = orders.filter(o => o.photoArchived === true).sort(sortByNum);
   const rabenOrders = orders.filter(o => o.status === 'raben').sort(sortByNum);
   const transportOrders = orders.filter(o => o.status === 'transport').sort(sortByNum);
+  const archive1Orders = orders.filter(o => o.status === 'archived').sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -718,6 +770,7 @@ export default function App() {
     if (a.raben || a.raben_manage) tabs.push('raben');
     if (a.transport || a.transport_manage) tabs.push('transport');
     if (a.archive2) tabs.push('archive2');
+    if (a.archive1) tabs.push('archive1');
     if (a.admin) tabs.push('admin');
     return tabs;
   };
@@ -758,7 +811,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v21</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v21.1</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -781,7 +834,8 @@ export default function App() {
             {visibleTabs.includes('photos') && <button className={`tab-btn ${activeTab === 'photos' ? 'active' : ''}`} onClick={() => { setActiveTab('photos'); setSearchQuery(''); }}>📸 Zdjęcia</button>}
             {visibleTabs.includes('raben') && <button className={`tab-btn ${activeTab === 'raben' ? 'active' : ''}`} onClick={() => { setActiveTab('raben'); setSearchQuery(''); }}>🚚 Raben</button>}
             {visibleTabs.includes('transport') && <button className={`tab-btn ${activeTab === 'transport' ? 'active' : ''}`} onClick={() => { setActiveTab('transport'); setSearchQuery(''); }}>🚛 Transporty</button>}
-            {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => { setActiveTab('archive2'); setSearchQuery(''); }}>📂 Archiwum</button>}
+            {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => { setActiveTab('archive2'); setSearchQuery(''); }}>📂 Archiwum zdjęć</button>}
+            {visibleTabs.includes('archive1') && <button className={`tab-btn ${activeTab === 'archive1' ? 'active' : ''}`} onClick={() => { setActiveTab('archive1'); setSearchQuery(''); }}>🗄️ Archiwum</button>}
             {visibleTabs.includes('admin') && <button className={`tab-btn ${activeTab === 'admin' ? 'active' : ''}`} onClick={() => { setActiveTab('admin'); setSearchQuery(''); }}>⚙️ Admin</button>}
           </div>
 
@@ -930,9 +984,11 @@ export default function App() {
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                             <input type="date" value={order.transportDate || ''} onChange={e => handleUpdateOrderField(order.id, 'transportDate', e.target.value)} style={{ flex: 1 }} disabled={order.dateConfirmed} />
                             {!order.dateConfirmed && order.transportDate && (
-                              <button className="btn btn-success" onClick={() => handleConfirmDate(order.id)} disabled={isLoading} style={{ padding: '6px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}>✓ Potwierdź datę</button>
+                              <button className="btn btn-success" onClick={() => handleConfirmDate(order.id)} disabled={isLoading} style={{ padding: '6px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}>✓ Potwierdź</button>
                             )}
-                            {order.dateConfirmed && <span style={{ color: '#388e3c', fontSize: '12px', fontWeight: 'bold' }}>✅ Potwierdzona</span>}
+                            {order.dateConfirmed && (
+                              <button className="btn btn-danger" onClick={() => handleUnconfirmDate(order.id)} disabled={isLoading} style={{ padding: '6px 12px', fontSize: '11px', whiteSpace: 'nowrap' }}>🔓 Zmień datę</button>
+                            )}
                           </div>
                         </div>
 
@@ -968,7 +1024,7 @@ export default function App() {
                         </div>
 
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
-                          <button className="btn btn-success" onClick={() => handleTransferOrder(order.id, isPallet ? 'pallet' : 'dedicated')} disabled={isLoading || !order.dateConfirmed} style={{ flex: 1 }}>
+                          <button className="btn btn-success" onClick={() => handleTransferOrder(order.id, isPallet ? 'pallet' : 'dedicated')} disabled={isLoading || !order.transportDate} style={{ flex: 1 }}>
                             {isPallet ? '🚚 → Raben' : '🚛 → Transporty'}
                           </button>
                           <button className="btn btn-danger" onClick={() => handleRevertFromReady(order.id)} disabled={isLoading} style={{ padding: '8px 12px' }}>↩ Cofnij</button>
@@ -1081,47 +1137,136 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'raben' && (
+          {activeTab === 'archive1' && (
             <div>
-              <h2>🚚 Raben ({rabenOrders.length})</h2>
+              <h2>🗄️ Archiwum zamówień ({archive1Orders.length})</h2>
               <div className="search-box">
                 <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
               </div>
-              {rabenOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {rabenOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+              {archive1Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {archive1Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
                 <div key={order.docId} className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                      {order.uwagi && <p style={{ fontSize: '12px', color: '#1976d2', margin: '0 0 4px 0' }}>💬 {order.uwagi}</p>}
-                      {order.transportDate && <p style={{ fontSize: '11px', color: '#666', margin: 0 }}>📅 {order.transportDate}</p>}
-                    </div>
+                  <h3 style={{ margin: '0 0 8px 0' }}>#{order.id}</h3>
+                  <div style={{ fontSize: '12px', color: '#666' }}>
+                    {order.transportDate && <p style={{ margin: '2px 0' }}>📅 Data transportu: {order.transportDate}</p>}
+                    {order.uwagi && <p style={{ margin: '2px 0' }}>💬 Uwagi: {order.uwagi}</p>}
+                    {order.notatki && <p style={{ margin: '2px 0' }}>📝 Notatki: {order.notatki}</p>}
+                    {order.attachments?.length > 0 && <p style={{ margin: '2px 0' }}>📎 Załączników: {order.attachments.length}</p>}
+                    {order.photoCount > 0 && <p style={{ margin: '2px 0' }}>📸 Zdjęć: {order.photoCount}</p>}
+                    {order.archivedAt && <p style={{ margin: '2px 0' }}>🗄️ Zarchiwizowano: {new Date(order.archivedAt).toLocaleString('pl-PL')}</p>}
                   </div>
                 </div>
               ))}
             </div>
           )}
 
-          {activeTab === 'transport' && (
-            <div>
-              <h2>🚛 Transporty własne ({transportOrders.length})</h2>
-              <div className="search-box">
-                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
-              </div>
-              {transportOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {transportOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
-                <div key={order.docId} className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
-                      {order.uwagi && <p style={{ fontSize: '12px', color: '#1976d2', margin: '0 0 4px 0' }}>💬 {order.uwagi}</p>}
-                      {order.transportDate && <p style={{ fontSize: '11px', color: '#666', margin: 0 }}>📅 {order.transportDate}</p>}
-                    </div>
-                  </div>
+          {(activeTab === 'raben' || activeTab === 'transport') && (() => {
+            const isRaben = activeTab === 'raben';
+            const tabOrders = isRaben ? rabenOrders : transportOrders;
+            const tabLabel = isRaben ? '🚚 Raben' : '🚛 Transporty własne';
+            const ua = getUserAccess(currentUser);
+            const canManage = isRaben ? ua.raben_manage : ua.transport_manage;
+            const checkboxes = isRaben
+              ? [{ key: 'spakowane', label: 'Spakowane' }, { key: 'wyslane', label: 'Wysłane' }]
+              : [{ key: 'spakowane', label: 'Spakowane' }, { key: 'wyslane', label: 'Wysłane' }, { key: 'dostarczone', label: 'Dostarczone' }];
+            const allChecked = (order) => checkboxes.every(cb => order[cb.key]);
+
+            return (
+              <div>
+                <h2>{tabLabel} ({tabOrders.length})</h2>
+                <div className="search-box">
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
                 </div>
-              ))}
-            </div>
-          )}
+
+                {uploadMessage && (
+                  <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>
+                    {uploadMessage}
+                  </div>
+                )}
+
+                {tabOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+                {tabOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                  <React.Fragment key={order.docId}>
+                    <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                            {order.transportDate && <span style={{ fontSize: '11px', color: '#666' }}>📅 {order.transportDate}</span>}
+                            {order.spakowane && <span style={{ fontSize: '10px', background: '#fff3cd', padding: '1px 6px', borderRadius: '4px' }}>📦 spak.</span>}
+                            {order.wyslane && <span style={{ fontSize: '10px', background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>🚚 wysł.</span>}
+                            {order.dostarczone && <span style={{ fontSize: '10px', background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>✅ dost.</span>}
+                          </div>
+                          {order.uwagi && <p style={{ fontSize: '12px', color: '#1976d2', margin: '4px 0 0 0' }}>💬 {order.uwagi}</p>}
+                        </div>
+                        <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
+                      </div>
+                    </div>
+
+                    {selectedOrderId === order.id && (
+                      <div className="card" style={{ borderLeft: `3px solid ${isRaben ? '#ff9800' : '#9c27b0'}` }}>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📅 Data transportu:</label>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 'bold' }}>{order.transportDate || 'Brak'}</span>
+                            <button className="btn" onClick={() => handlePasswordDateEdit(order.id)} disabled={isLoading} style={{ padding: '4px 8px', fontSize: '11px' }}>🔒 Zmień datę</button>
+                          </div>
+                        </div>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>💬 Uwagi (widoczne na liście):</label>
+                          <input type="text" maxLength={60} value={order.uwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'uwagi', e.target.value)} placeholder="Krótka uwaga..." style={{ width: '100%' }} />
+                        </div>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Notatki:</label>
+                          <textarea value={order.notatki || ''} onChange={e => handleUpdateOrderField(order.id, 'notatki', e.target.value)} placeholder="Dłuższa notatka..." style={{ width: '100%', height: '60px' }} />
+                        </div>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📎 Załączniki:</label>
+                          {canManage && (
+                            <>
+                              {!accessToken ? (
+                                <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ fontSize: '12px', width: '100%', marginBottom: '0.5rem' }}>🔐 Autoryzuj Google Drive</button>
+                              ) : (
+                                <button className="btn btn-primary" onClick={() => attachmentFileInputRef.current?.click()} disabled={isLoading} style={{ fontSize: '12px', marginBottom: '0.5rem' }}>📤 Dodaj plik</button>
+                              )}
+                              <input ref={attachmentFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f); e.target.value = ''; }} style={{ display: 'none' }} />
+                            </>
+                          )}
+                          {(order.attachments || []).length === 0 && <p style={{ fontSize: '12px', color: '#999' }}>Brak załączników</p>}
+                          {(order.attachments || []).map((att, idx) => (
+                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', padding: '6px 10px', borderRadius: '4px', marginBottom: '4px', fontSize: '12px' }}>
+                              <a href={att.driveLink || '#'} target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>📄 {att.name}</a>
+                              {canManage && <button className="btn btn-danger" onClick={() => handleDeleteAttachment(order.id, idx)} disabled={isLoading} style={{ padding: '2px 6px', fontSize: '10px' }}>✕</button>}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ borderTop: '1px solid #ddd', paddingTop: '1rem', marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '8px' }}>Status wysyłki:</label>
+                          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                            {checkboxes.map(cb => (
+                              <label key={cb.key} style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <input type="checkbox" checked={order[cb.key] || false} onChange={() => handleToggleShipping(order.id, cb.key)} disabled={isLoading} />
+                                {cb.label}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+
+                        {allChecked(order) && (
+                          <button className="btn btn-success" onClick={() => handleMoveToArchive(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Przenieś do archiwum</button>
+                        )}
+                      </div>
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            );
+          })()}
 
           {activeTab === 'admin' && (
             <div>
@@ -1190,3 +1335,4 @@ export default function App() {
     </div>
   );
 }
+
