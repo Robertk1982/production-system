@@ -12,7 +12,8 @@ const FIREBASE_CONFIG = {
 };
 
 const GOOGLE_CONFIG = {
-  CLIENT_ID: '736317012952-856e5b7qsgqq346845eb7kgu4qokq49d.apps.googleusercontent.com'
+  CLIENT_ID: '736317012952-856e5b7qsgqq346845eb7kgu4qokq49d.apps.googleusercontent.com',
+  PARENT_FOLDER_ID: '1R8zz1X_qmRDMM3X82jI_0lhDLF6qEpTe'
 };
 
 const app = initializeApp(FIREBASE_CONFIG);
@@ -191,7 +192,7 @@ export default function App() {
       });
       setIssueDesc('');
       setIssuePhoto(null);
-      alert('Błąd dodany');
+      alert('✅ Błąd dodany');
     } catch (err) {
       alert('Błąd: ' + err.message);
     } finally {
@@ -222,13 +223,13 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       if ((order.problems || []).some(p => !(p.cut && p.repaired))) {
-        alert('Są nienaprawione elementy - nie można zamknąć');
+        alert('❌ Są nienaprawione elementy - nie można zamknąć');
         return;
       }
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { status: 'ready' });
       setSelectedOrderId(null);
-      alert('Zamówienie przeniesione do Gotowych');
+      alert('✅ Zamówienie przeniesione do Gotowych');
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -236,26 +237,26 @@ export default function App() {
 
   const handleMoveFromReady = async (orderId, newStatus) => {
     const label = newStatus === 'pallet' ? 'Paletowy' : 'Dedykowana';
-    if (!window.confirm(`Przenieść do ${label}?`)) return;
+    if (!window.confirm(`Czy na pewno przenieść zamówienie #${orderId} do ${label}?`)) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { status: newStatus });
-      alert(`Przeniesione do ${label}`);
+      alert(`✅ Zamówienie przeniesione do ${label}`);
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
   };
 
   const handleRevertFromReady = async (orderId) => {
-    if (!window.confirm('Cofnąć do Zamówień?')) return;
+    if (!window.confirm(`Czy cofnąć zamówienie #${orderId} do Zamówień?`)) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { status: 'in_progress' });
-      alert('Cofnięto');
+      alert('✅ Cofnięto');
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -277,8 +278,9 @@ export default function App() {
       const byteArray = new Uint8Array(byteNumbers);
       const blob = new Blob([byteArray], { type: 'image/jpeg' });
 
+      // Szukaj folderu w PARENT_FOLDER_ID
       const searchResponse = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
+        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and '${GOOGLE_CONFIG.PARENT_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       const searchData = await searchResponse.json();
@@ -288,10 +290,15 @@ export default function App() {
         folderId = searchData.files[0].id;
         setUploadMessage(`📁 Folder znaleziony: ${orderId}`);
       } else {
+        // Utwórz folder w PARENT_FOLDER_ID
         const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
           method: 'POST',
           headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder' })
+          body: JSON.stringify({ 
+            name: orderId, 
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [GOOGLE_CONFIG.PARENT_FOLDER_ID]
+          })
         });
         const folderData = await createResponse.json();
         if (!folderData.id) throw new Error('Nie udało się utworzyć folderu');
@@ -315,7 +322,8 @@ export default function App() {
         setUploadMessage(`✅ Zdjęcie ${photoNumber} uploadowane`);
         return true;
       } else {
-        setUploadMessage(`❌ Upload zdjęcia ${photoNumber} nie powiódł się`);
+        const error = await uploadResponse.text();
+        setUploadMessage(`❌ Upload zdjęcia ${photoNumber} nie powiódł się: ${error}`);
         return false;
       }
     } catch (err) {
@@ -416,7 +424,7 @@ export default function App() {
 
   const handleArchivePhotos = async () => {
     if (!photoSession || photoSession.photos.length < 3) {
-      alert('Min 3 zdjęcia potrzebne');
+      alert('❌ Min 3 zdjęcia potrzebne');
       return;
     }
 
@@ -492,7 +500,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v17</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v18</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
