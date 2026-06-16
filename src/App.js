@@ -33,7 +33,7 @@ const compressImage = (file) => {
         canvas.width = img.width;
         canvas.height = img.height;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.5));
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
       };
     };
   });
@@ -291,11 +291,10 @@ export default function ProductionSystem() {
   const handleTakePhoto = () => {
     if (canvasRef.current && videoRef.current) {
       const ctx = canvasRef.current.getContext('2d');
-      const scale = Math.min(1, 800 / Math.max(videoRef.current.videoWidth, videoRef.current.videoHeight));
-      canvasRef.current.width = videoRef.current.videoWidth * scale;
-      canvasRef.current.height = videoRef.current.videoHeight * scale;
+      canvasRef.current.width = videoRef.current.videoWidth;
+      canvasRef.current.height = videoRef.current.videoHeight;
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoData = canvasRef.current.toDataURL('image/jpeg', 0.4);
+      const photoData = canvasRef.current.toDataURL('image/jpeg', 0.7);
       setIssuePhoto(photoData);
     }
   };
@@ -589,7 +588,7 @@ export default function ProductionSystem() {
       canvasRef.current.width = videoRef.current.videoWidth;
       canvasRef.current.height = videoRef.current.videoHeight;
       ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.5);
+      const photoBase64 = canvasRef.current.toDataURL('image/jpeg', 0.7);
 
       setIsLoading(true);
       const photoNumber = photoSession.photos.length + 1;
