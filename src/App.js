@@ -75,7 +75,16 @@ export default function ProductionSystem() {
 
   // Load users
   useEffect(() => {
-    const loadUsers = async () => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    document.body.appendChild(script);
+
+    const savedToken = localStorage.getItem('google_access_token');
+    if (savedToken) {
+      setAccessToken(savedToken);
+    }
+  }, []);
       try {
         const usersRef = collection(db, 'users');
         const unsubscribe = onSnapshot(usersRef, (snapshot) => {
@@ -348,6 +357,75 @@ export default function ProductionSystem() {
     setPhotoSession(prev => ({ ...prev, photos: newPhotos }));
   };
 
+  const uploadToGoogleDrive = async (orderId, photoBase64, photoNumber) => {
+    if (!accessToken) return false;
+    try {
+      const byteCharacters = atob(photoBase64.split(',')[1]);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'image/jpeg' });
+
+      const searchResponse = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const searchData = await searchResponse.json();
+      let folderId;
+
+      if (searchData.files && searchData.files.length > 0) {
+        folderId = searchData.files[0].id;
+      } else {
+        const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder' })
+        });
+        const folderData = await createResponse.json();
+        folderId = folderData.id;
+      }
+
+      const fileName = `${orderId}_${photoNumber}.jpg`;
+      const metadata = { name: fileName, mimeType: 'image/jpeg', parents: [folderId] };
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.append('file', blob);
+
+      const uploadResponse = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form
+      });
+
+      return uploadResponse.ok;
+    } catch (err) {
+      console.error('Upload error:', err);
+      return false;
+    }
+  };
+
+  const handleAuthorizeGoogle = () => {
+    if (!window.google) {
+      alert('Google API się ładuje');
+      return;
+    }
+
+    window.google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CONFIG.CLIENT_ID,
+      scope: 'https://www.googleapis.com/auth/drive',
+      callback: (response) => {
+        if (response.access_token) {
+          setAccessToken(response.access_token);
+          localStorage.setItem('google_access_token', response.access_token);
+          alert('✅ Autoryzacja OK!');
+        }
+      },
+      error_callback: (error) => alert('Błąd: ' + error.message)
+    }).requestAccessToken();
+  };
+
   const handleArchivePhotos = async () => {
     if (!photoSession || photoSession.photos.length < 3) {
       alert('Min 3 zdjęcia!');
@@ -356,18 +434,27 @@ export default function ProductionSystem() {
 
     try {
       setIsLoading(true);
+
+      // Upload na Google Drive
+      if (accessToken) {
+        for (let i = 0; i < photoSession.photos.length; i++) {
+          await uploadToGoogleDrive(photoSession.orderId, photoSession.photos[i], i + 1);
+        }
+      }
+
       const order = orders.find(o => o.id === photoSession.orderId);
       if (!order) return;
 
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
         photoCount: photoSession.photos.length,
-        photoArchived: true
+        photoArchived: true,
+        status: 'archived'
       });
 
       stopCamera();
       setPhotoSession(null);
-      alert('Zdjęcia zarchiwizowane!');
+      alert('✓ Zdjęcia zarchiwizowane!');
     } catch (err) {
       alert('Błąd: ' + err.message);
     } finally {
@@ -645,6 +732,14 @@ export default function ProductionSystem() {
           {activeTab === 'photos' && (
             <div>
               <h2>📸 Zdjęcia</h2>
+              
+              {!accessToken && (
+                <div className="card" style={{ background: '#fff3cd', marginBottom: '1rem' }}>
+                  <p>Aby uploadować na Google Drive, najpierw autoryzuj dostęp.</p>
+                  <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ width: '100%' }}>🔐 Autoryzuj Google Drive</button>
+                </div>
+              )}
+
               {!photoSession ? (
                 <>
                   <p style={{ fontSize: '12px', color: '#666', marginBottom: '1rem' }}>Wybierz zamówienie ze statusem READY lub innym</p>
