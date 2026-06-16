@@ -173,6 +173,10 @@ export default function App() {
     if (user) {
       setCurrentUser({ uid: user.id, ...user });
       setAppState('dashboard');
+      // Reset to first available tab for THIS user
+      const a = getUserAccess(user);
+      const firstTab = (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.admin ? 'admin' : 'orders';
+      setActiveTab(firstTab);
     } else {
       alert('Błędne dane logowania');
     }
@@ -734,7 +738,7 @@ export default function App() {
   const handleTransferOrder = (orderId, fromStatus) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
-    if (!order.transportDate) { alert('Najpierw wybierz datę transportu'); return; }
+    if (!order.dateConfirmed) { alert('Najpierw potwierdź datę transportu'); return; }
 
     const defaultTarget = fromStatus === 'pallet' ? 'raben' : 'transport';
     const altTarget = fromStatus === 'pallet' ? 'transport' : 'raben';
@@ -759,14 +763,25 @@ export default function App() {
   };
 
   const sortByNum = (a, b) => parseInt(a.id) - parseInt(b.id);
+  const sortByDateThenNum = (a, b) => {
+    const aHas = !!a.transportDate; const bHas = !!b.transportDate;
+    if (aHas && !bHas) return -1; if (!aHas && bHas) return 1;
+    if (aHas && bHas) return a.transportDate.localeCompare(b.transportDate);
+    return parseInt(a.id) - parseInt(b.id);
+  };
+  const sortByDate = (a, b) => (a.transportDate || '9999').localeCompare(b.transportDate || '9999');
+  const sortByDateThenPaleta = (a, b) => {
+    const d = (a.transportDate || '9999').localeCompare(b.transportDate || '9999');
+    if (d !== 0) return d;
+    return (a.paleta || 999) - (b.paleta || 999);
+  };
   const inProgressOrders = orders.filter(o => o.status === 'in_progress').sort(sortByNum);
   const readyOrders = orders.filter(o => o.status === 'ready').sort(sortByNum);
-  const palletOrders = orders.filter(o => o.status === 'pallet').sort(sortByNum);
-  const dedicatedOrders = orders.filter(o => o.status === 'dedicated').sort(sortByNum);
+  const palletOrders = orders.filter(o => o.status === 'pallet').sort(sortByDateThenNum);
+  const dedicatedOrders = orders.filter(o => o.status === 'dedicated').sort(sortByDateThenNum);
   const archive2Orders = orders.filter(o => o.photoArchived === true).sort(sortByNum);
-  const sortByDate = (a, b) => (a.transportDate || '9999').localeCompare(b.transportDate || '9999');
   const rabenOrders = orders.filter(o => o.status === 'raben').sort(sortByDate);
-  const transportOrders = orders.filter(o => o.status === 'transport').sort(sortByNum);
+  const transportOrders = orders.filter(o => o.status === 'transport').sort(sortByDateThenPaleta);
   const archive1Orders = orders.filter(o => o.status === 'archived').sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
@@ -824,7 +839,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v22</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v22.1</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1037,7 +1052,7 @@ export default function App() {
                         </div>
 
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
-                          <button className="btn btn-success" onClick={() => handleTransferOrder(order.id, isPallet ? 'pallet' : 'dedicated')} disabled={isLoading || !order.transportDate} style={{ flex: 1 }}>
+                          <button className="btn btn-success" onClick={() => handleTransferOrder(order.id, isPallet ? 'pallet' : 'dedicated')} disabled={isLoading || !order.dateConfirmed} style={{ flex: 1 }}>
                             {isPallet ? '🚚 → Raben' : '🚛 → Transporty'}
                           </button>
                           <button className="btn btn-danger" onClick={() => handleRevertFromReady(order.id)} disabled={isLoading} style={{ padding: '8px 12px' }}>↩ Cofnij</button>
@@ -1196,6 +1211,7 @@ export default function App() {
               ? [{ key: 'spakowane', label: 'Spakowane' }, { key: 'wyslane', label: 'Wysłane' }]
               : [{ key: 'spakowane', label: 'Spakowane' }, { key: 'wyslane', label: 'Wysłane' }, { key: 'dostarczone', label: 'Dostarczone' }];
             const allChecked = (order) => checkboxes.every(cb => order[cb.key]);
+            const paletaOptions = Array.from({ length: 20 }, (_, i) => i + 1);
 
             return (
               <div>
@@ -1219,9 +1235,10 @@ export default function App() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             <h3 style={{ margin: 0 }}>#{order.id}</h3>
                             {order.transportDate && <span style={{ fontSize: '11px', color: '#666' }}>📅 {order.transportDate}</span>}
-                            {order.spakowane && <span style={{ fontSize: '10px', background: '#fff3cd', padding: '1px 6px', borderRadius: '4px' }}>📦 spak.</span>}
-                            {order.wyslane && <span style={{ fontSize: '10px', background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>🚚 wysł.</span>}
-                            {order.dostarczone && <span style={{ fontSize: '10px', background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>✅ dost.</span>}
+                            {!isRaben && order.paleta && <span style={{ fontSize: '10px', background: '#e1bee7', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>P{order.paleta}</span>}
+                            {order.spakowane && <span style={{ fontSize: '10px', background: '#fff3cd', padding: '1px 6px', borderRadius: '4px' }}>📦</span>}
+                            {order.wyslane && <span style={{ fontSize: '10px', background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>🚚</span>}
+                            {order.dostarczone && <span style={{ fontSize: '10px', background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>✅</span>}
                           </div>
                           {order.uwagi && <p style={{ fontSize: '12px', color: '#1976d2', margin: '4px 0 0 0' }}>💬 {order.uwagi}</p>}
                         </div>
@@ -1236,25 +1253,55 @@ export default function App() {
                           <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📅 Data transportu:</label>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                             <span style={{ fontWeight: 'bold' }}>{order.transportDate || 'Brak'}</span>
-                            {dateEditOrderId === order.id ? (
+                            {canManage && (dateEditOrderId === order.id ? (
                               <>
                                 <input type="date" defaultValue={order.transportDate || ''} onChange={e => handleSaveDateEdit(order.id, e.target.value)} style={{ padding: '4px' }} />
                                 <button className="btn" onClick={() => setDateEditOrderId(null)} style={{ padding: '4px 8px', fontSize: '11px' }}>Anuluj</button>
                               </>
                             ) : (
                               <button className="btn" onClick={() => handlePasswordDateEdit(order.id)} disabled={isLoading} style={{ padding: '4px 8px', fontSize: '11px' }}>🔒 Zmień datę</button>
-                            )}
+                            ))}
                           </div>
                         </div>
 
+                        {!isRaben && (
+                          <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🎨 Paleta:</label>
+                            {canManage ? (
+                              <div style={{ display: 'flex', gap: '4px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <select value={order.paleta || ''} onChange={e => handleUpdateOrderField(order.id, 'paleta', e.target.value ? parseInt(e.target.value) : null)} style={{ padding: '4px' }}>
+                                  <option value="">-- brak --</option>
+                                  {paletaOptions.map(n => <option key={n} value={n}>Paleta {n}</option>)}
+                                </select>
+                                {order.paleta && <button className="btn btn-danger" onClick={() => handleUpdateOrderField(order.id, 'paleta', null)} style={{ padding: '2px 8px', fontSize: '11px' }}>Usuń</button>}
+                              </div>
+                            ) : (
+                              <span>{order.paleta ? `Paleta ${order.paleta}` : 'Brak'}</span>
+                            )}
+                          </div>
+                        )}
+
                         <div style={{ marginBottom: '1rem' }}>
                           <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>💬 Uwagi (widoczne na liście):</label>
-                          <input type="text" maxLength={60} value={order.uwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'uwagi', e.target.value)} placeholder="Krótka uwaga..." style={{ width: '100%' }} />
+                          {canManage ? (
+                            <input type="text" maxLength={60} value={order.uwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'uwagi', e.target.value)} placeholder="Krótka uwaga..." style={{ width: '100%' }} />
+                          ) : (
+                            <p style={{ fontSize: '12px', color: '#333', margin: 0 }}>{order.uwagi || '—'}</p>
+                          )}
                         </div>
 
                         <div style={{ marginBottom: '1rem' }}>
-                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Notatki:</label>
-                          <textarea value={order.notatki || ''} onChange={e => handleUpdateOrderField(order.id, 'notatki', e.target.value)} placeholder="Dłuższa notatka..." style={{ width: '100%', height: '60px' }} />
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Notatki biuro:</label>
+                          {canManage ? (
+                            <textarea value={order.notatki || ''} onChange={e => handleUpdateOrderField(order.id, 'notatki', e.target.value)} placeholder="Notatki biuro..." style={{ width: '100%', height: '50px' }} />
+                          ) : (
+                            <p style={{ fontSize: '12px', color: '#333', margin: 0, whiteSpace: 'pre-wrap' }}>{order.notatki || '—'}</p>
+                          )}
+                        </div>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Notatki magazyn:</label>
+                          <textarea value={order.notatki_magazyn || ''} onChange={e => handleUpdateOrderField(order.id, 'notatki_magazyn', e.target.value)} placeholder="Notatki magazyn..." style={{ width: '100%', height: '50px' }} />
                         </div>
 
                         <div style={{ marginBottom: '1rem' }}>
