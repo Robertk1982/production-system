@@ -79,6 +79,7 @@ export default function App() {
   
   const [photoSession, setPhotoSession] = useState(null);
   const [uploadMessage, setUploadMessage] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -181,7 +182,7 @@ export default function App() {
   const handleStartCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { max: 1920, min: 640 }, height: { max: 1080, min: 480 } }
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
       });
       streamRef.current = stream;
       if (videoRef.current) {
@@ -487,11 +488,12 @@ export default function App() {
     }
   };
 
-  const inProgressOrders = orders.filter(o => o.status === 'in_progress');
-  const readyOrders = orders.filter(o => o.status === 'ready');
-  const palletOrders = orders.filter(o => o.status === 'pallet');
-  const dedicatedOrders = orders.filter(o => o.status === 'dedicated');
-  const archive2Orders = orders.filter(o => o.photoArchived === true);
+  const sortByNum = (a, b) => parseInt(a.id) - parseInt(b.id);
+  const inProgressOrders = orders.filter(o => o.status === 'in_progress').sort(sortByNum);
+  const readyOrders = orders.filter(o => o.status === 'ready').sort(sortByNum);
+  const palletOrders = orders.filter(o => o.status === 'pallet').sort(sortByNum);
+  const dedicatedOrders = orders.filter(o => o.status === 'dedicated').sort(sortByNum);
+  const archive2Orders = orders.filter(o => o.photoArchived === true).sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -532,12 +534,15 @@ export default function App() {
         .msg-success { background: #e8f5e9; color: #388e3c; }
         .msg-error { background: #ffebee; color: #c62828; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+        .search-box { position: relative; margin-bottom: 1rem; }
+        .search-box input { width: 100%; padding: 8px 8px 8px 32px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; box-sizing: border-box; }
+        .search-box::before { content: '🔍'; position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 14px; }
       `}</style>
 
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v19.2</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v19.4</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -553,29 +558,33 @@ export default function App() {
           </div>
 
           <div className="tabs">
-            {visibleTabs.includes('orders') && <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => setActiveTab('orders')}>📦 Zamówienia</button>}
-            {visibleTabs.includes('ready') && <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => setActiveTab('ready')}>📋 Gotowe</button>}
-            {visibleTabs.includes('pallet') && <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => setActiveTab('pallet')}>🎨 Paletowy</button>}
-            {visibleTabs.includes('dedicated') && <button className={`tab-btn ${activeTab === 'dedicated' ? 'active' : ''}`} onClick={() => setActiveTab('dedicated')}>📦 Dedykowana</button>}
-            {visibleTabs.includes('photos') && <button className={`tab-btn ${activeTab === 'photos' ? 'active' : ''}`} onClick={() => setActiveTab('photos')}>📸 Zdjęcia</button>}
-            {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => setActiveTab('archive2')}>📂 Archiwum2</button>}
+            {visibleTabs.includes('orders') && <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => { setActiveTab('orders'); setSearchQuery(''); }}>📦 Zamówienia</button>}
+            {visibleTabs.includes('ready') && <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => { setActiveTab('ready'); setSearchQuery(''); }}>📋 Gotowe</button>}
+            {visibleTabs.includes('pallet') && <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => { setActiveTab('pallet'); setSearchQuery(''); }}>🎨 Paletowy</button>}
+            {visibleTabs.includes('dedicated') && <button className={`tab-btn ${activeTab === 'dedicated' ? 'active' : ''}`} onClick={() => { setActiveTab('dedicated'); setSearchQuery(''); }}>📦 Dedykowana</button>}
+            {visibleTabs.includes('photos') && <button className={`tab-btn ${activeTab === 'photos' ? 'active' : ''}`} onClick={() => { setActiveTab('photos'); setSearchQuery(''); }}>📸 Zdjęcia</button>}
+            {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => { setActiveTab('archive2'); setSearchQuery(''); }}>📂 Archiwum2</button>}
           </div>
 
           {activeTab === 'orders' && (
-            <div className="grid">
-              <div>
-                {currentUser.role === 'operator' && (
-                  <div className="card">
-                    <h3>Nowe zamówienie</h3>
-                    <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer" style={{ width: '100%', marginBottom: '1rem' }} />
-                    <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading} style={{ width: '100%' }}>Rozpocznij</button>
-                  </div>
-                )}
+            <div>
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
 
-                <h3>Zamówienia ({inProgressOrders.length})</h3>
-                {inProgressOrders.length === 0 && <p style={{ color: '#999', fontSize: '12px' }}>Brak zamówień</p>}
-                {inProgressOrders.map(order => (
-                  <div key={order.docId} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+              {currentUser.role === 'operator' && (
+                <div className="card">
+                  <h3>Nowe zamówienie</h3>
+                  <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer" style={{ width: '100%', marginBottom: '1rem' }} />
+                  <button className="btn btn-success" onClick={handleStartOrder} disabled={isLoading} style={{ width: '100%' }}>Rozpocznij</button>
+                </div>
+              )}
+
+              <h3>Zamówienia ({inProgressOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length})</h3>
+              {inProgressOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999', fontSize: '12px' }}>Brak zamówień</p>}
+              {inProgressOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                <React.Fragment key={order.docId}>
+                  <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ fontWeight: 'bold' }}>#{order.id}</div>
                     <div style={{ fontSize: '12px', color: '#666' }}>
                       {order.problems?.length > 0 ? (
@@ -585,66 +594,67 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                ))}
-              </div>
 
-              {selectedOrder && (
-                <div>
-                  <div className="card">
-                    <h3>#{selectedOrder.id}</h3>
+                  {selectedOrderId === order.id && selectedOrder && (
+                    <div className="card" style={{ borderLeft: '3px solid #2196F3' }}>
+                      <h3>#{selectedOrder.id}</h3>
 
-                    {selectedOrder.problems?.length > 0 && (
-                      <div style={{ marginBottom: '1rem' }}>
-                        <h4>Błędy ({selectedOrder.problems.length}):</h4>
-                        {selectedOrder.problems.map(p => (
-                          <div key={p.id} style={{ background: '#f9f9f9', padding: '0.75rem', marginBottom: '0.5rem', borderRadius: '4px' }}>
-                            {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem" />}
-                            <p style={{ margin: '0.5rem 0', fontWeight: 'bold' }}>{p.description}</p>
-                            <label style={{ marginRight: '1rem' }}>
-                              <input type="checkbox" checked={p.cut || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} disabled={isLoading} />
-                              Wycięty
-                            </label>
-                            <label>
-                              <input type="checkbox" checked={p.repaired || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} disabled={isLoading} />
-                              Dorobiony
-                            </label>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                      {selectedOrder.problems?.length > 0 && (
+                        <div style={{ marginBottom: '1rem' }}>
+                          <h4>Błędy ({selectedOrder.problems.length}):</h4>
+                          {selectedOrder.problems.map(p => (
+                            <div key={p.id} style={{ background: '#f9f9f9', padding: '0.75rem', marginBottom: '0.5rem', borderRadius: '4px' }}>
+                              {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem" />}
+                              <p style={{ margin: '0.5rem 0', fontWeight: 'bold' }}>{p.description}</p>
+                              <label style={{ marginRight: '1rem' }}>
+                                <input type="checkbox" checked={p.cut || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'cut')} disabled={isLoading} />
+                                Wycięty
+                              </label>
+                              <label>
+                                <input type="checkbox" checked={p.repaired || false} onChange={() => handleToggleProblem(selectedOrder.id, p.id, 'repaired')} disabled={isLoading} />
+                                Dorobiony
+                              </label>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
-                    {currentUser.role === 'operator' && (
-                      <>
-                        <h4>Dodaj błąd</h4>
-                        <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
-                        <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Plik</button>
-                        <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImageSmall(f).then(setIssuePhoto).catch(() => alert('Błąd kompresji')); }} style={{ display: 'none' }} />
+                      {currentUser.role === 'operator' && (
+                        <>
+                          <h4>Dodaj błąd</h4>
+                          <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
+                          <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Plik</button>
+                          <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImageSmall(f).then(setIssuePhoto).catch(() => alert('Błąd kompresji')); }} style={{ display: 'none' }} />
 
-                        <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginTop: '1rem', display: cameraActive ? 'block' : 'none' }}></video>
-                        {cameraActive && <button className="btn btn-success" onClick={handleTakePhoto} style={{ width: '100%', marginTop: '0.5rem' }} disabled={isLoading}>Zrób zdjęcie</button>}
+                          <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginTop: '1rem', display: cameraActive ? 'block' : 'none' }}></video>
+                          {cameraActive && <button className="btn btn-success" onClick={handleTakePhoto} style={{ width: '100%', marginTop: '0.5rem' }} disabled={isLoading}>Zrób zdjęcie</button>}
 
-                        <canvas ref={canvasRef}></canvas>
-                        {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue" />}
+                          <canvas ref={canvasRef}></canvas>
+                          {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue" />}
 
-                        <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis" style={{ width: '100%', height: '80px', marginTop: '1rem', marginBottom: '1rem' }} />
-                        <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading} style={{ width: '100%' }}>Dodaj błąd</button>
+                          <textarea value={issueDesc} onChange={e => setIssueDesc(e.target.value)} placeholder="Opis" style={{ width: '100%', height: '80px', marginTop: '1rem', marginBottom: '1rem' }} />
+                          <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading} style={{ width: '100%' }}>Dodaj błąd</button>
 
-                        {!selectedOrder.problems?.some(p => !(p.cut && p.repaired)) && (
-                          <button className="btn btn-success" onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading} style={{ width: '100%', marginTop: '1rem' }}>✓ Zlecenie zakończone</button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
+                          {!selectedOrder.problems?.some(p => !(p.cut && p.repaired)) && (
+                            <button className="btn btn-success" onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading} style={{ width: '100%', marginTop: '1rem' }}>✓ Zlecenie zakończone</button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
             </div>
           )}
 
           {activeTab === 'ready' && (
             <div>
               <h2>Gotowe ({readyOrders.length})</h2>
-              {readyOrders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {readyOrders.map(order => (
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {readyOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {readyOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h3 style={{ margin: 0 }}>#{order.id}</h3>
@@ -661,8 +671,11 @@ export default function App() {
           {activeTab === 'pallet' && (
             <div>
               <h2>Paletowy ({palletOrders.length})</h2>
-              {palletOrders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {palletOrders.map(order => (
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {palletOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {palletOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <h3 style={{ margin: 0 }}>#{order.id}</h3>
@@ -676,8 +689,11 @@ export default function App() {
           {activeTab === 'dedicated' && (
             <div>
               <h2>Dedykowana ({dedicatedOrders.length})</h2>
-              {dedicatedOrders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {dedicatedOrders.map(order => (
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {dedicatedOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {dedicatedOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <h3 style={{ margin: 0 }}>#{order.id}</h3>
@@ -713,8 +729,11 @@ export default function App() {
 
               {!photoSession ? (
                 <>
+                  <div className="search-box">
+                    <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+                  </div>
                   <p style={{ fontSize: '12px', color: '#666', marginBottom: '1rem' }}>Wybierz zamówienie do fotografowania</p>
-                  {orders.filter(o => !o.photoArchived).map(order => (
+                  {orders.filter(o => !o.photoArchived && o.status !== 'in_progress').filter(o => !searchQuery || o.id.includes(searchQuery)).sort(sortByNum).map(order => (
                     <div key={order.docId} className="card">
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
@@ -772,8 +791,11 @@ export default function App() {
           {activeTab === 'archive2' && (
             <div>
               <h2>Archiwum2 ({archive2Orders.length})</h2>
-              {archive2Orders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {archive2Orders.map(order => (
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {archive2Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {archive2Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
                 <div key={order.docId} className="card">
                   <h3 style={{ margin: '0 0 8px 0' }}>#{order.id}</h3>
                   <p style={{ fontSize: '12px', color: '#4CAF50', margin: 0 }}>📸 {order.photoCount} zdjęcia wykonane</p>
