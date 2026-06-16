@@ -67,15 +67,17 @@ export default function App() {
   const streamRef = useRef(null);
 
   useEffect(() => {
+    // Load Google API
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
     script.defer = true;
     document.body.appendChild(script);
 
-    const savedToken = localStorage.getItem('google_access_token');
-    if (savedToken) setAccessToken(savedToken);
+    // NIE ładuj starego tokenu - zawsze czysty start!
+    setAccessToken(null);
 
+    // Load users
     const usersRef = collection(db, 'users');
     const unsubUsers = onSnapshot(usersRef, (snapshot) => {
       if (snapshot.empty) {
@@ -91,6 +93,7 @@ export default function App() {
       }
     });
 
+    // Load orders
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
       setOrders(snapshot.docs.map(d => ({ docId: d.id, ...d.data() })));
     });
@@ -114,6 +117,8 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     setAppState('login');
+    setAccessToken(null);
+    localStorage.removeItem('google_access_token');
     stopCamera();
   };
 
@@ -271,7 +276,7 @@ export default function App() {
 
   const uploadToGoogleDrive = async (orderId, photoBase64, photoNumber) => {
     if (!accessToken) {
-      setUploadMessage('❌ Brak tokenu - autoryzuj Google Drive');
+      setUploadMessage('❌ Brak autoryzacji - kliknij "Autoryzuj Google Drive"');
       return false;
     }
     try {
@@ -328,7 +333,7 @@ export default function App() {
         return true;
       } else {
         const error = await uploadResponse.text();
-        setUploadMessage(`❌ Upload zdjęcia ${photoNumber} nie powiódł się: ${error}`);
+        setUploadMessage(`❌ Upload zdjęcia ${photoNumber} nie powiódł się`);
         return false;
       }
     } catch (err) {
@@ -344,24 +349,30 @@ export default function App() {
       return;
     }
 
+    setUploadMessage('⏳ Czekam na autoryzację...');
+
     const tokenClient = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CONFIG.CLIENT_ID,
       scope: 'https://www.googleapis.com/auth/drive',
       callback: (response) => {
-        if (response.access_token) {
-          setAccessToken(response.access_token);
-          localStorage.setItem('google_access_token', response.access_token);
-          setUploadMessage('✅ Google Drive autoryzowany!');
+        console.log('OAuth response:', response);
+        if (response && response.access_token) {
+          const token = response.access_token;
+          setAccessToken(token);
+          localStorage.setItem('google_access_token', token);
+          setUploadMessage('✅ Google Drive autoryzowany! Możesz teraz robić zdjęcia.');
         } else {
           setUploadMessage('❌ Autoryzacja nie powiodła się');
+          console.error('No access token in response');
         }
       },
       error_callback: (error) => {
-        setUploadMessage(`❌ Błąd: ${error.message || JSON.stringify(error)}`);
+        console.error('OAuth error:', error);
+        setUploadMessage(`❌ Błąd autoryzacji`);
       }
     });
 
-    tokenClient.requestAccessToken({ prompt: "consent" });
+    tokenClient.requestAccessToken({ prompt: 'consent' });
   };
 
   const handleStartPhotoSession = (orderId) => {
@@ -505,7 +516,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v19</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v19.2</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -547,9 +558,7 @@ export default function App() {
                     <div style={{ fontWeight: 'bold' }}>#{order.id}</div>
                     <div style={{ fontSize: '12px', color: '#666' }}>
                       {order.problems?.length > 0 ? (
-                        <>
-                          Błędy: {order.problems.length} | Naprawione: {order.problems.filter(p => p.cut && p.repaired).length}
-                        </>
+                        <>Błędy: {order.problems.length} | Naprawione: {order.problems.filter(p => p.cut && p.repaired).length}</>
                       ) : (
                         <>Brak błędów - gotowe do zamknięcia</>
                       )}
@@ -664,8 +673,14 @@ export default function App() {
 
               {!accessToken && (
                 <div className="card" style={{ background: '#fff3cd', marginBottom: '1rem' }}>
-                  <p style={{ margin: '0 0 1rem 0' }}>Aby uploadować na Google Drive, autoryzuj dostęp.</p>
-                  <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ width: '100%' }}>🔐 Autoryzuj Google Drive</button>
+                  <p style={{ margin: '0 0 1rem 0' }}>👉 NAJPIERW: Kliknij przycisk poniżej i autoryzuj dostęp do Google Drive!</p>
+                  <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ width: '100%', padding: '12px', fontSize: '14px', fontWeight: 'bold' }}>🔐 AUTORYZUJ GOOGLE DRIVE</button>
+                </div>
+              )}
+
+              {accessToken && (
+                <div className="card" style={{ background: '#e8f5e9', marginBottom: '1rem' }}>
+                  <p style={{ margin: 0, color: '#388e3c', fontWeight: 'bold' }}>✅ Google Drive autoryzowany!</p>
                 </div>
               )}
 
@@ -685,7 +700,7 @@ export default function App() {
                           <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
                           <p style={{ fontSize: '12px', color: '#666', margin: 0 }}>Status: {order.status} | Zdjęcia: {order.photoCount || 0}</p>
                         </div>
-                        <button className="btn btn-success" onClick={() => handleStartPhotoSession(order.id)} disabled={isLoading}>Zdjęcia</button>
+                        <button className="btn btn-success" onClick={() => handleStartPhotoSession(order.id)} disabled={isLoading || !accessToken}>Zdjęcia</button>
                       </div>
                     </div>
                   ))}
