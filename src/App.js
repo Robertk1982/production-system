@@ -236,27 +236,34 @@ export default function App() {
   };
 
   const handleMoveFromReady = async (orderId, newStatus) => {
-    const label = newStatus === 'pallet' ? 'Paletowy' : 'Dedykowana';
-    if (!window.confirm(`Czy na pewno przenieść zamówienie #${orderId} do ${label}?`)) return;
+    let confirmMsg = '';
+    if (newStatus === 'pallet') {
+      confirmMsg = 'Czy potwierdzasz, że status w Prestashop został zmieniony na "! Dostawa paletowa - Odpowiedz na wiadomość" i chcesz przenieść zamówienie do katalogu Paletowy?';
+    } else if (newStatus === 'dedicated') {
+      confirmMsg = 'Czy potwierdzasz, że status w Prestashop został zmieniony na "! Dostawa dedykowana o krok. Produkcja zakończona sukcesem." i chcesz przenieść zamówienie do Dedykowana?';
+    }
+
+    if (!window.confirm(confirmMsg)) return;
+    
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { status: newStatus });
-      alert(`✅ Zamówienie przeniesione do ${label}`);
+      alert(`✅ Zamówienie przeniesione`);
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
   };
 
   const handleRevertFromReady = async (orderId) => {
-    if (!window.confirm(`Czy cofnąć zamówienie #${orderId} do Zamówień?`)) return;
+    if (!window.confirm(`Czy cofnąć zamówienie #${orderId} do Gotowych?`)) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { status: 'in_progress' });
-      alert('✅ Cofnięto');
+      await updateDoc(orderRef, { status: 'ready' });
+      alert('✅ Cofnięto do Gotowych');
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -278,7 +285,6 @@ export default function App() {
       const byteArray = new Uint8Array(byteNumbers);
       const blob = new Blob([byteArray], { type: 'image/jpeg' });
 
-      // Szukaj folderu w PARENT_FOLDER_ID
       const searchResponse = await fetch(
         `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and '${GOOGLE_CONFIG.PARENT_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -290,7 +296,6 @@ export default function App() {
         folderId = searchData.files[0].id;
         setUploadMessage(`📁 Folder znaleziony: ${orderId}`);
       } else {
-        // Utwórz folder w PARENT_FOLDER_ID
         const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
           method: 'POST',
           headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
@@ -500,7 +505,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v18</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v19</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -536,10 +541,19 @@ export default function App() {
                 )}
 
                 <h3>Zamówienia ({inProgressOrders.length})</h3>
+                {inProgressOrders.length === 0 && <p style={{ color: '#999', fontSize: '12px' }}>Brak zamówień</p>}
                 {inProgressOrders.map(order => (
                   <div key={order.docId} className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ fontWeight: 'bold' }}>#{order.id}</div>
-                    {order.problems?.some(p => !(p.cut && p.repaired)) && <div style={{ fontSize: '11px', color: '#ff9800' }}>⚠️ {order.problems.filter(p => !(p.cut && p.repaired)).length} błędy</div>}
+                    <div style={{ fontSize: '12px', color: '#666' }}>
+                      {order.problems?.length > 0 ? (
+                        <>
+                          Błędy: {order.problems.length} | Naprawione: {order.problems.filter(p => p.cut && p.repaired).length}
+                        </>
+                      ) : (
+                        <>Brak błędów - gotowe do zamknięcia</>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -551,7 +565,7 @@ export default function App() {
 
                     {selectedOrder.problems?.length > 0 && (
                       <div style={{ marginBottom: '1rem' }}>
-                        <h4>Błędy:</h4>
+                        <h4>Błędy ({selectedOrder.problems.length}):</h4>
                         {selectedOrder.problems.map(p => (
                           <div key={p.id} style={{ background: '#f9f9f9', padding: '0.75rem', marginBottom: '0.5rem', borderRadius: '4px' }}>
                             {p.photoURL && <img src={p.photoURL} className="photo-preview" alt="Problem" />}
@@ -599,6 +613,7 @@ export default function App() {
           {activeTab === 'ready' && (
             <div>
               <h2>Gotowe ({readyOrders.length})</h2>
+              {readyOrders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
               {readyOrders.map(order => (
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -606,7 +621,6 @@ export default function App() {
                     <div>
                       <button className="btn btn-primary" onClick={() => handleMoveFromReady(order.id, 'pallet')} disabled={isLoading} style={{ marginRight: '0.5rem' }}>🎨 Paletowy</button>
                       <button className="btn btn-primary" onClick={() => handleMoveFromReady(order.id, 'dedicated')} disabled={isLoading} style={{ marginRight: '0.5rem' }}>📦 Dedykowana</button>
-                      <button className="btn btn-danger" onClick={() => handleRevertFromReady(order.id)} disabled={isLoading}>Cofnij</button>
                     </div>
                   </div>
                 </div>
@@ -617,6 +631,7 @@ export default function App() {
           {activeTab === 'pallet' && (
             <div>
               <h2>Paletowy ({palletOrders.length})</h2>
+              {palletOrders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
               {palletOrders.map(order => (
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -631,6 +646,7 @@ export default function App() {
           {activeTab === 'dedicated' && (
             <div>
               <h2>Dedykowana ({dedicatedOrders.length})</h2>
+              {dedicatedOrders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
               {dedicatedOrders.map(order => (
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -720,6 +736,7 @@ export default function App() {
           {activeTab === 'archive2' && (
             <div>
               <h2>Archiwum2 ({archive2Orders.length})</h2>
+              {archive2Orders.length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
               {archive2Orders.map(order => (
                 <div key={order.docId} className="card">
                   <h3 style={{ margin: '0 0 8px 0' }}>#{order.id}</h3>
