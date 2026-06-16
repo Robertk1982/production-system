@@ -119,6 +119,7 @@ export default function App() {
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const warehouseFileInputRef = useRef(null);
+  const attachmentFileInputRef = useRef(null);
   const streamRef = useRef(null);
 
   useEffect(() => {
@@ -568,6 +569,132 @@ export default function App() {
     }
   };
 
+  const handleUpdateOrderField = async (orderId, field, value) => {
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { [field]: value });
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const handleConfirmDate = async (orderId) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    if (!order.transportDate) { alert('Wybierz datę transportu'); return; }
+    if (!order.attachments || order.attachments.length === 0) { alert('Dodaj załączniki (list przewozowy) przed potwierdzeniem daty'); return; }
+    if (!window.confirm(`Potwierdzić datę transportu ${order.transportDate} dla zamówienia #${orderId}?`)) return;
+    try {
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { dateConfirmed: true });
+      alert('✅ Data potwierdzona');
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const ATTACHMENTS_FOLDER_ID = '1EtAmIu6Cr8f3jD9JQC3G3nNE0M3Gf_bD';
+
+  const handleUploadAttachment = async (orderId, file) => {
+    if (!accessToken) { alert('Najpierw autoryzuj Google Drive w zakładce Zdjęcia'); return; }
+    try {
+      setIsLoading(true);
+      setUploadMessage(`⏳ Upload ${file.name}...`);
+
+      // Find or create order subfolder in attachments folder
+      const searchResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and '${ATTACHMENTS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const searchData = await searchResp.json();
+      let folderId;
+
+      if (searchData.files && searchData.files.length > 0) {
+        folderId = searchData.files[0].id;
+      } else {
+        const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder', parents: [ATTACHMENTS_FOLDER_ID] })
+        });
+        const folderData = await createResp.json();
+        if (!folderData.id) throw new Error('Nie udało się utworzyć folderu');
+        folderId = folderData.id;
+      }
+
+      const metadata = { name: file.name, parents: [folderId] };
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.append('file', file);
+
+      const uploadResp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form
+      });
+
+      if (!uploadResp.ok) throw new Error('Upload nie powiódł się');
+      const uploadData = await uploadResp.json();
+
+      // Save attachment info in Firebase
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      const currentAttachments = order.attachments || [];
+      await updateDoc(orderRef, {
+        attachments: [...currentAttachments, { name: file.name, driveFileId: uploadData.id, driveLink: uploadData.webViewLink || '', uploadedAt: new Date().toISOString() }]
+      });
+
+      setUploadMessage(`✅ ${file.name} uploadowany`);
+    } catch (err) {
+      setUploadMessage(`❌ Błąd: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteAttachment = async (orderId, attachmentIdx) => {
+    if (!window.confirm('Usunąć załącznik?')) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      const updated = (order.attachments || []).filter((_, i) => i !== attachmentIdx);
+      await updateDoc(orderRef, { attachments: updated, dateConfirmed: updated.length === 0 ? false : order.dateConfirmed });
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const handleTransferOrder = (orderId, fromStatus) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    if (!order.dateConfirmed) { alert('Najpierw potwierdź datę transportu'); return; }
+
+    const defaultTarget = fromStatus === 'pallet' ? 'raben' : 'transport';
+    const altTarget = fromStatus === 'pallet' ? 'transport' : 'raben';
+    const defaultLabel = fromStatus === 'pallet' ? 'Raben' : 'Transporty własne';
+    const altLabel = fromStatus === 'pallet' ? 'Transporty własne' : 'Raben';
+
+    const choice = window.prompt(
+      `Przenieś zamówienie #${orderId}:\n\n1 = ${defaultLabel} (domyślnie)\n2 = Nie przenoś\n3 = ${altLabel}\n\nWpisz 1, 2 lub 3:`,
+      '1'
+    );
+
+    if (!choice || choice === '2') return;
+
+    if (choice === '3') {
+      if (!window.confirm(`Czy na pewno chcesz zmienić rodzaj transportu na "${altLabel}"?`)) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      updateDoc(orderRef, { status: altTarget }).then(() => alert(`✅ Przeniesiono do ${altLabel}`));
+    } else {
+      const orderRef = doc(db, 'orders', order.docId);
+      updateDoc(orderRef, { status: defaultTarget }).then(() => alert(`✅ Przeniesiono do ${defaultLabel}`));
+    }
+  };
+
   const sortByNum = (a, b) => parseInt(a.id) - parseInt(b.id);
   const inProgressOrders = orders.filter(o => o.status === 'in_progress').sort(sortByNum);
   const readyOrders = orders.filter(o => o.status === 'ready').sort(sortByNum);
@@ -631,7 +758,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v20</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v21</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -760,41 +887,99 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'pallet' && (
-            <div>
-              <h2>Paletowy ({palletOrders.length})</h2>
-              <div className="search-box">
-                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
-              </div>
-              {palletOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {palletOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
-                <div key={order.docId} className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                    <button className="btn btn-danger" onClick={() => handleRevertFromReady(order.id)} disabled={isLoading}>Cofnij</button>
-                  </div>
+          {(activeTab === 'pallet' || activeTab === 'dedicated') && (() => {
+            const isPallet = activeTab === 'pallet';
+            const tabOrders = isPallet ? palletOrders : dedicatedOrders;
+            const tabLabel = isPallet ? 'Paletowy' : 'Dedykowana';
+            return (
+              <div>
+                <h2>{isPallet ? '🎨' : '📦'} {tabLabel} ({tabOrders.length})</h2>
+                <div className="search-box">
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
                 </div>
-              ))}
-            </div>
-          )}
 
-          {activeTab === 'dedicated' && (
-            <div>
-              <h2>Dedykowana ({dedicatedOrders.length})</h2>
-              <div className="search-box">
-                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
-              </div>
-              {dedicatedOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {dedicatedOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
-                <div key={order.docId} className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                    <button className="btn btn-danger" onClick={() => handleRevertFromReady(order.id)} disabled={isLoading}>Cofnij</button>
+                {uploadMessage && (
+                  <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>
+                    {uploadMessage}
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                )}
+
+                {tabOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+                {tabOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                  <React.Fragment key={order.docId}>
+                    <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                          {order.uwagi && <p style={{ fontSize: '12px', color: '#1976d2', margin: '0 0 2px 0' }}>💬 {order.uwagi}</p>}
+                          <div style={{ fontSize: '11px', color: '#666', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {order.transportDate && <span>📅 {order.transportDate}</span>}
+                            {order.dateConfirmed && <span style={{ color: '#388e3c' }}>✅ data potwierdzona</span>}
+                            {order.attachments?.length > 0 && <span>📎 {order.attachments.length} plik(ów)</span>}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
+                      </div>
+                    </div>
+
+                    {selectedOrderId === order.id && (
+                      <div className="card" style={{ borderLeft: '3px solid #2196F3' }}>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📅 Data transportu:</label>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <input type="date" value={order.transportDate || ''} onChange={e => handleUpdateOrderField(order.id, 'transportDate', e.target.value)} style={{ flex: 1 }} disabled={order.dateConfirmed} />
+                            {!order.dateConfirmed && order.transportDate && (
+                              <button className="btn btn-success" onClick={() => handleConfirmDate(order.id)} disabled={isLoading} style={{ padding: '6px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}>✓ Potwierdź datę</button>
+                            )}
+                            {order.dateConfirmed && <span style={{ color: '#388e3c', fontSize: '12px', fontWeight: 'bold' }}>✅ Potwierdzona</span>}
+                          </div>
+                        </div>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>💬 Uwagi (widoczne na liście, max 60 znaków):</label>
+                          <input type="text" maxLength={60} value={order.uwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'uwagi', e.target.value)} placeholder="Krótka uwaga..." style={{ width: '100%' }} />
+                        </div>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Notatki:</label>
+                          <textarea value={order.notatki || ''} onChange={e => handleUpdateOrderField(order.id, 'notatki', e.target.value)} placeholder="Dłuższa notatka..." style={{ width: '100%', height: '60px' }} />
+                        </div>
+
+                        <div style={{ marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📎 Załączniki (list przewozowy, dokumenty):</label>
+                          {!accessToken ? (
+                            <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ fontSize: '12px', width: '100%' }}>🔐 Autoryzuj Google Drive (wymagane do załączników)</button>
+                          ) : (
+                            <button className="btn btn-primary" onClick={() => attachmentFileInputRef.current?.click()} disabled={isLoading} style={{ fontSize: '12px', marginBottom: '0.5rem' }}>📤 Dodaj plik</button>
+                          )}
+                          <input ref={attachmentFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f); e.target.value = ''; }} style={{ display: 'none' }} />
+
+                          {(order.attachments || []).length > 0 && (
+                            <div style={{ marginTop: '0.5rem' }}>
+                              {order.attachments.map((att, idx) => (
+                                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', padding: '6px 10px', borderRadius: '4px', marginBottom: '4px', fontSize: '12px' }}>
+                                  <a href={att.driveLink || '#'} target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>📄 {att.name}</a>
+                                  <button className="btn btn-danger" onClick={() => handleDeleteAttachment(order.id, idx)} disabled={isLoading} style={{ padding: '2px 6px', fontSize: '10px' }}>✕</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
+                          <button className="btn btn-success" onClick={() => handleTransferOrder(order.id, isPallet ? 'pallet' : 'dedicated')} disabled={isLoading || !order.dateConfirmed} style={{ flex: 1 }}>
+                            {isPallet ? '🚚 → Raben' : '🚛 → Transporty'}
+                          </button>
+                          <button className="btn btn-danger" onClick={() => handleRevertFromReady(order.id)} disabled={isLoading} style={{ padding: '8px 12px' }}>↩ Cofnij</button>
+                        </div>
+                      </div>
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            );
+          })()}
 
           {activeTab === 'photos' && (
             <div>
