@@ -274,8 +274,8 @@ export default function ProductionSystem() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { 
           facingMode: 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
         }
       });
       streamRef.current = stream;
@@ -640,7 +640,16 @@ export default function ProductionSystem() {
     }
   };
 
-  const handleArchiveOrder = async () => {
+  const handleDeletePhoto = (indexToDelete) => {
+    if (photoSession) {
+      const newPhotos = photoSession.photos.filter((_, idx) => idx !== indexToDelete);
+      setPhotoSession({
+        orderId: photoSession.orderId,
+        photos: newPhotos,
+        currentPhoto: newPhotos.length > 0 ? newPhotos[newPhotos.length - 1] : null
+      });
+    }
+  };
     if (!photoSession) return;
 
     try {
@@ -1092,8 +1101,11 @@ export default function ProductionSystem() {
 
                   {photoSession.photos.length > 0 && (
                     <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
-                      {photoSession.photos.map((_, idx) => (
-                        <div key={idx} style={{ fontSize: '12px', color: '#4CAF50' }}>✓ {photoSession.orderId}_{idx + 1}.jpg</div>
+                      {photoSession.photos.map((photo, idx) => (
+                        <div key={idx} style={{ fontSize: '12px', color: '#4CAF50', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>✓ {photoSession.orderId}_{idx + 1}.jpg</span>
+                          <button className="btn btn-danger" onClick={() => handleDeletePhoto(idx)} disabled={isLoading} style={{ padding: '4px 8px', fontSize: '11px' }}>X</button>
+                        </div>
                       ))}
                     </div>
                   )}
