@@ -361,7 +361,7 @@ export default function App() {
       }
     });
 
-    tokenClient.requestAccessToken();
+    tokenClient.requestAccessToken({ prompt: "consent" });
   };
 
   const handleStartPhotoSession = (orderId) => {
