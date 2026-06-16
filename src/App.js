@@ -38,6 +38,26 @@ const compressImage = (file) => {
   });
 };
 
+const compressImageSmall = (file) => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.4));
+      };
+    };
+  });
+};
+
 export default function App() {
   const [appState, setAppState] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
@@ -67,14 +87,17 @@ export default function App() {
   const streamRef = useRef(null);
 
   useEffect(() => {
+    // Load Google API
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
     script.defer = true;
     document.body.appendChild(script);
 
+    // NIE ładuj starego tokenu - zawsze czysty start!
     setAccessToken(null);
 
+    // Load users
     const usersRef = collection(db, 'users');
     const unsubUsers = onSnapshot(usersRef, (snapshot) => {
       if (snapshot.empty) {
@@ -90,6 +113,7 @@ export default function App() {
       }
     });
 
+    // Load orders
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
       setOrders(snapshot.docs.map(d => ({ docId: d.id, ...d.data() })));
     });
@@ -157,7 +181,7 @@ export default function App() {
   const handleStartCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { max: 640, min: 320 }, height: { max: 480, min: 320 } }
+        video: { facingMode: 'environment', width: { max: 1920, min: 640 }, height: { max: 1080, min: 480 } }
       });
       streamRef.current = stream;
       if (videoRef.current) {
@@ -172,10 +196,11 @@ export default function App() {
   const handleTakePhoto = () => {
     if (!canvasRef.current || !videoRef.current) return;
     const ctx = canvasRef.current.getContext('2d');
-    canvasRef.current.width = videoRef.current.videoWidth;
-    canvasRef.current.height = videoRef.current.videoHeight;
+    const scale = Math.min(1, 800 / Math.max(videoRef.current.videoWidth, videoRef.current.videoHeight));
+    canvasRef.current.width = videoRef.current.videoWidth * scale;
+    canvasRef.current.height = videoRef.current.videoHeight * scale;
     ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
-    setIssuePhoto(canvasRef.current.toDataURL('image/jpeg', 0.7));
+    setIssuePhoto(canvasRef.current.toDataURL('image/jpeg', 0.4));
   };
 
   const handleAddProblem = async () => {
@@ -189,7 +214,7 @@ export default function App() {
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
-        problems: [...(order.problems || []), { id: Date.now(), description: issueDesc, cut: false, repaired: false }]
+        problems: [...(order.problems || []), { id: Date.now(), description: issueDesc, photoURL: issuePhoto, cut: false, repaired: false }]
       });
       setIssueDesc('');
       setIssuePhoto(null);
@@ -512,7 +537,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v19.2</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -593,9 +618,9 @@ export default function App() {
                         <h4>Dodaj błąd</h4>
                         <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
                         <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Plik</button>
-                        <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImage(f).then(setIssuePhoto).catch(() => alert('Błąd kompresji')); }} style={{ display: 'none' }} />
+                        <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImageSmall(f).then(setIssuePhoto).catch(() => alert('Błąd kompresji')); }} style={{ display: 'none' }} />
 
-                        {cameraActive && <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginTop: '1rem' }}></video>}
+                        <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginTop: '1rem', display: cameraActive ? 'block' : 'none' }}></video>
                         {cameraActive && <button className="btn btn-success" onClick={handleTakePhoto} style={{ width: '100%', marginTop: '0.5rem' }} disabled={isLoading}>Zrób zdjęcie</button>}
 
                         <canvas ref={canvasRef}></canvas>
