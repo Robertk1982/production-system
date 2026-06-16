@@ -773,7 +773,8 @@ export default function App() {
   const sortByDateThenPaleta = (a, b) => {
     const d = (a.transportDate || '9999').localeCompare(b.transportDate || '9999');
     if (d !== 0) return d;
-    return (a.paleta || 999) - (b.paleta || 999);
+    const parsePaleta = (p) => { if (!p) return 999; const parts = String(p).split('.'); return parseInt(parts[0]) * 100 + parseInt(parts[1] || 0); };
+    return parsePaleta(a.paleta) - parsePaleta(b.paleta);
   };
   const inProgressOrders = orders.filter(o => o.status === 'in_progress').sort(sortByNum);
   const readyOrders = orders.filter(o => o.status === 'ready').sort(sortByNum);
@@ -839,7 +840,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v22.1</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v22.2</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1211,7 +1212,8 @@ export default function App() {
               ? [{ key: 'spakowane', label: 'Spakowane' }, { key: 'wyslane', label: 'Wysłane' }]
               : [{ key: 'spakowane', label: 'Spakowane' }, { key: 'wyslane', label: 'Wysłane' }, { key: 'dostarczone', label: 'Dostarczone' }];
             const allChecked = (order) => checkboxes.every(cb => order[cb.key]);
-            const paletaOptions = Array.from({ length: 20 }, (_, i) => i + 1);
+            const paletaOptions = [];
+            for (let p = 1; p <= 4; p++) { for (let m = 1; m <= 10; m++) { paletaOptions.push(`${p}.${m}`); } }
 
             return (
               <div>
@@ -1269,14 +1271,14 @@ export default function App() {
                             <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🎨 Paleta:</label>
                             {canManage ? (
                               <div style={{ display: 'flex', gap: '4px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                <select value={order.paleta || ''} onChange={e => handleUpdateOrderField(order.id, 'paleta', e.target.value ? parseInt(e.target.value) : null)} style={{ padding: '4px' }}>
+                                <select value={order.paleta || ''} onChange={e => handleUpdateOrderField(order.id, 'paleta', e.target.value || null)} style={{ padding: '4px' }}>
                                   <option value="">-- brak --</option>
-                                  {paletaOptions.map(n => <option key={n} value={n}>Paleta {n}</option>)}
+                                  {paletaOptions.map(n => <option key={n} value={n}>P{n}</option>)}
                                 </select>
                                 {order.paleta && <button className="btn btn-danger" onClick={() => handleUpdateOrderField(order.id, 'paleta', null)} style={{ padding: '2px 8px', fontSize: '11px' }}>Usuń</button>}
                               </div>
                             ) : (
-                              <span>{order.paleta ? `Paleta ${order.paleta}` : 'Brak'}</span>
+                              <span>{order.paleta ? `P${order.paleta}` : 'Brak'}</span>
                             )}
                           </div>
                         )}
@@ -1337,7 +1339,7 @@ export default function App() {
                           </div>
                         </div>
 
-                        {allChecked(order) && (
+                        {allChecked(order) && canManage && (
                           <button className="btn btn-success" onClick={() => handleMoveToArchive(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Przenieś do archiwum</button>
                         )}
                       </div>
