@@ -115,6 +115,13 @@ export default function App() {
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserAccess, setNewUserAccess] = useState({ ...DEFAULT_ACCESS });
   const [editingUserId, setEditingUserId] = useState(null);
+  const [dateEditOrderId, setDateEditOrderId] = useState(null);
+
+  const historyEntry = (action) => ({
+    timestamp: new Date().toISOString(),
+    user: currentUser?.name || currentUser?.email || '?',
+    action
+  });
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -204,7 +211,8 @@ export default function App() {
         createdAt: new Date().toISOString(),
         problems: [],
         photoCount: 0,
-        photoArchived: false
+        photoArchived: false,
+        history: [historyEntry('Utworzono zamówienie')]
       });
       setNewOrderNum('');
       setSelectedOrderId(newOrderNum);
@@ -251,7 +259,7 @@ export default function App() {
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
-        problems: [...(order.problems || []), { id: Date.now(), description: issueDesc, photoURL: issuePhoto, cut: false, repaired: false }]
+        problems: [...(order.problems || []), { id: Date.now(), description: issueDesc, photoURL: issuePhoto, cut: false, repaired: false }], history: [...(order.history || []), historyEntry(`Dodano błąd: ${issueDesc}`)]
       });
       setIssueDesc('');
       setIssuePhoto(null);
@@ -290,7 +298,7 @@ export default function App() {
         return;
       }
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { status: 'ready' });
+      await updateDoc(orderRef, { status: 'ready', history: [...(order.history || []), historyEntry('Zlecenie zakończone → Gotowe')] });
       setSelectedOrderId(null);
       alert('✅ Zamówienie przeniesione do Gotowych');
     } catch (err) {
@@ -312,7 +320,7 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { status: newStatus });
+      await updateDoc(orderRef, { status: newStatus, history: [...(order.history || []), historyEntry(`Przeniesiono do ${newStatus === 'pallet' ? 'Paletowy' : 'Dedykowana'}`)] });
       alert(`✅ Zamówienie przeniesione`);
     } catch (err) {
       alert('Błąd: ' + err.message);
@@ -325,7 +333,7 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { status: 'ready' });
+      await updateDoc(orderRef, { status: 'ready', history: [...(order.history || []), historyEntry('Cofnięto do Gotowych')] });
       alert('✅ Cofnięto do Gotowych');
     } catch (err) {
       alert('Błąd: ' + err.message);
@@ -510,7 +518,8 @@ export default function App() {
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
         photoCount: photoSession.photos.length,
-        photoArchived: true
+        photoArchived: true,
+        history: [...(order.history || []), historyEntry(`Zarchiwizowano ${photoSession.photos.length} zdjęć`)]
       });
 
       stopCamera();
@@ -588,7 +597,7 @@ export default function App() {
     if (!window.confirm(`Potwierdzić datę transportu ${order.transportDate} dla zamówienia #${orderId}?`)) return;
     try {
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { dateConfirmed: true });
+      await updateDoc(orderRef, { dateConfirmed: true, history: [...(order.history || []), historyEntry(`Potwierdzono datę: ${order.transportDate}`)] });
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -600,7 +609,7 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { dateConfirmed: false });
+      await updateDoc(orderRef, { dateConfirmed: false, history: [...(order.history || []), historyEntry('Odblokowano datę do zmiany')] });
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -655,7 +664,7 @@ export default function App() {
       const orderRef = doc(db, 'orders', order.docId);
       const currentAttachments = order.attachments || [];
       await updateDoc(orderRef, {
-        attachments: [...currentAttachments, { name: file.name, driveFileId: uploadData.id, driveLink: uploadData.webViewLink || '', uploadedAt: new Date().toISOString() }]
+        attachments: [...currentAttachments, { name: file.name, driveFileId: uploadData.id, driveLink: uploadData.webViewLink || '', uploadedAt: new Date().toISOString() }], history: [...(order.history || []), historyEntry(`Dodano załącznik: ${file.name}`)]
       });
 
       setUploadMessage(`✅ ${file.name} uploadowany`);
@@ -673,7 +682,7 @@ export default function App() {
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       const updated = (order.attachments || []).filter((_, i) => i !== attachmentIdx);
-      await updateDoc(orderRef, { attachments: updated });
+      await updateDoc(orderRef, { attachments: updated, history: [...(order.history || []), historyEntry('Usunięto załącznik')] });
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -684,7 +693,7 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { [field]: !(order[field] || false) });
+      await updateDoc(orderRef, { [field]: !(order[field] || false), history: [...(order.history || []), historyEntry(`${!(order[field] || false) ? 'Zaznaczono' : 'Odznaczono'}: ${field}`)] });
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -696,24 +705,27 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { status: 'archived', archivedAt: new Date().toISOString() });
+      await updateDoc(orderRef, { status: 'archived', archivedAt: new Date().toISOString(), history: [...(order.history || []), historyEntry('Przeniesiono do archiwum')] });
       alert('✅ Przeniesiono do archiwum');
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
   };
 
-  const handlePasswordDateEdit = async (orderId) => {
+  const handlePasswordDateEdit = (orderId) => {
     const pwd = window.prompt('Wpisz hasło aby zmienić datę:');
     if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Nieprawidłowe hasło'); return; }
-    const newDate = window.prompt('Nowa data (RRRR-MM-DD):');
+    setDateEditOrderId(orderId);
+  };
+
+  const handleSaveDateEdit = async (orderId, newDate) => {
     if (!newDate) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { transportDate: newDate, dateConfirmed: true });
-      alert('✅ Data zmieniona');
+      await updateDoc(orderRef, { transportDate: newDate, dateConfirmed: true, history: [...(order.history || []), historyEntry(`Zmieniono datę na: ${newDate} (hasło)`)] });
+      setDateEditOrderId(null);
     } catch (err) {
       alert('Błąd: ' + err.message);
     }
@@ -739,10 +751,10 @@ export default function App() {
     if (choice === '3') {
       if (!window.confirm(`Czy na pewno chcesz zmienić rodzaj transportu na "${altLabel}"?`)) return;
       const orderRef = doc(db, 'orders', order.docId);
-      updateDoc(orderRef, { status: altTarget }).then(() => alert(`✅ Przeniesiono do ${altLabel}`));
+      updateDoc(orderRef, { status: altTarget, history: [...(order.history || []), historyEntry(`Przeniesiono do ${altLabel} (zmiana rodzaju)`)] }).then(() => alert(`✅ Przeniesiono do ${altLabel}`));
     } else {
       const orderRef = doc(db, 'orders', order.docId);
-      updateDoc(orderRef, { status: defaultTarget }).then(() => alert(`✅ Przeniesiono do ${defaultLabel}`));
+      updateDoc(orderRef, { status: defaultTarget, history: [...(order.history || []), historyEntry(`Przeniesiono do ${defaultLabel}`)] }).then(() => alert(`✅ Przeniesiono do ${defaultLabel}`));
     }
   };
 
@@ -752,7 +764,8 @@ export default function App() {
   const palletOrders = orders.filter(o => o.status === 'pallet').sort(sortByNum);
   const dedicatedOrders = orders.filter(o => o.status === 'dedicated').sort(sortByNum);
   const archive2Orders = orders.filter(o => o.photoArchived === true).sort(sortByNum);
-  const rabenOrders = orders.filter(o => o.status === 'raben').sort(sortByNum);
+  const sortByDate = (a, b) => (a.transportDate || '9999').localeCompare(b.transportDate || '9999');
+  const rabenOrders = orders.filter(o => o.status === 'raben').sort(sortByDate);
   const transportOrders = orders.filter(o => o.status === 'transport').sort(sortByNum);
   const archive1Orders = orders.filter(o => o.status === 'archived').sort(sortByNum);
 
@@ -811,7 +824,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v21.1</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v22</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1147,14 +1160,27 @@ export default function App() {
               {archive1Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
                 <div key={order.docId} className="card">
                   <h3 style={{ margin: '0 0 8px 0' }}>#{order.id}</h3>
-                  <div style={{ fontSize: '12px', color: '#666' }}>
-                    {order.transportDate && <p style={{ margin: '2px 0' }}>📅 Data transportu: {order.transportDate}</p>}
-                    {order.uwagi && <p style={{ margin: '2px 0' }}>💬 Uwagi: {order.uwagi}</p>}
-                    {order.notatki && <p style={{ margin: '2px 0' }}>📝 Notatki: {order.notatki}</p>}
-                    {order.attachments?.length > 0 && <p style={{ margin: '2px 0' }}>📎 Załączników: {order.attachments.length}</p>}
-                    {order.photoCount > 0 && <p style={{ margin: '2px 0' }}>📸 Zdjęć: {order.photoCount}</p>}
-                    {order.archivedAt && <p style={{ margin: '2px 0' }}>🗄️ Zarchiwizowano: {new Date(order.archivedAt).toLocaleString('pl-PL')}</p>}
+                  <div style={{ fontSize: '12px', color: '#666', marginBottom: '0.75rem' }}>
+                    {order.transportDate && <span style={{ marginRight: '12px' }}>📅 {order.transportDate}</span>}
+                    {order.uwagi && <span style={{ marginRight: '12px' }}>💬 {order.uwagi}</span>}
+                    {order.attachments?.length > 0 && <span style={{ marginRight: '12px' }}>📎 {order.attachments.length} plik(ów)</span>}
+                    {order.photoCount > 0 && <span>📸 {order.photoCount} zdjęć</span>}
                   </div>
+                  {order.notatki && <p style={{ fontSize: '12px', color: '#555', margin: '0 0 8px 0', fontStyle: 'italic' }}>📝 {order.notatki}</p>}
+                  {order.archivedAt && <p style={{ fontSize: '11px', color: '#388e3c', margin: '0 0 8px 0' }}>🗄️ Zarchiwizowano: {new Date(order.archivedAt).toLocaleString('pl-PL')}</p>}
+
+                  {(order.history || []).length > 0 && (
+                    <div style={{ borderTop: '1px solid #eee', paddingTop: '8px', marginTop: '8px' }}>
+                      <p style={{ fontSize: '11px', fontWeight: 'bold', margin: '0 0 6px 0', color: '#333' }}>📋 Historia zamówienia:</p>
+                      {order.history.map((h, idx) => (
+                        <div key={idx} style={{ fontSize: '11px', color: '#666', padding: '3px 0', borderBottom: '1px solid #f5f5f5', display: 'flex', gap: '8px' }}>
+                          <span style={{ color: '#999', whiteSpace: 'nowrap' }}>{new Date(h.timestamp).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                          <span style={{ color: '#1976d2', fontWeight: 'bold', whiteSpace: 'nowrap' }}>{h.user}</span>
+                          <span>{h.action}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1208,9 +1234,16 @@ export default function App() {
 
                         <div style={{ marginBottom: '1rem' }}>
                           <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📅 Data transportu:</label>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                             <span style={{ fontWeight: 'bold' }}>{order.transportDate || 'Brak'}</span>
-                            <button className="btn" onClick={() => handlePasswordDateEdit(order.id)} disabled={isLoading} style={{ padding: '4px 8px', fontSize: '11px' }}>🔒 Zmień datę</button>
+                            {dateEditOrderId === order.id ? (
+                              <>
+                                <input type="date" defaultValue={order.transportDate || ''} onChange={e => handleSaveDateEdit(order.id, e.target.value)} style={{ padding: '4px' }} />
+                                <button className="btn" onClick={() => setDateEditOrderId(null)} style={{ padding: '4px 8px', fontSize: '11px' }}>Anuluj</button>
+                              </>
+                            ) : (
+                              <button className="btn" onClick={() => handlePasswordDateEdit(order.id)} disabled={isLoading} style={{ padding: '4px 8px', fontSize: '11px' }}>🔒 Zmień datę</button>
+                            )}
                           </div>
                         </div>
 
@@ -1335,4 +1368,3 @@ export default function App() {
     </div>
   );
 }
-
