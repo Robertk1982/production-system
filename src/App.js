@@ -154,13 +154,11 @@ export default function App() {
     }
   };
 
-  const handleStartCamera = async (type = 'orders') => {
+  const handleStartCamera = async () => {
     try {
-      const constraints = type === 'orders' 
-        ? { video: { facingMode: 'environment', width: { max: 480, min: 320 }, height: { max: 640, min: 480 } } }
-        : { video: { facingMode: 'environment', width: { max: 1920, min: 640 }, height: { max: 1080, min: 480 } } };
-      
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { max: 640, min: 320 }, height: { max: 480, min: 320 } }
+      });
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -330,6 +328,7 @@ export default function App() {
         setUploadMessage(`✅ Zdjęcie ${photoNumber} uploadowane`);
         return true;
       } else {
+        const error = await uploadResponse.text();
         setUploadMessage(`❌ Upload zdjęcia ${photoNumber} nie powiódł się`);
         return false;
       }
@@ -352,6 +351,7 @@ export default function App() {
       client_id: GOOGLE_CONFIG.CLIENT_ID,
       scope: 'https://www.googleapis.com/auth/drive',
       callback: (response) => {
+        console.log('OAuth response:', response);
         if (response && response.access_token) {
           const token = response.access_token;
           setAccessToken(token);
@@ -359,9 +359,11 @@ export default function App() {
           setUploadMessage('✅ Google Drive autoryzowany! Możesz teraz robić zdjęcia.');
         } else {
           setUploadMessage('❌ Autoryzacja nie powiodła się');
+          console.error('No access token in response');
         }
       },
       error_callback: (error) => {
+        console.error('OAuth error:', error);
         setUploadMessage(`❌ Błąd autoryzacji`);
       }
     });
@@ -509,8 +511,8 @@ export default function App() {
 
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
-          <div className="card" style={{ textAlign: 'center' }}>
-            <img src="/images/flexmeble_logo.jpg" alt="Flexmeble" style={{ height: '60px', marginBottom: '2rem' }} />
+          <div className="card">
+            <h1 style={{ textAlign: 'center' }}>🏭 System</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -521,7 +523,7 @@ export default function App() {
       {appState === 'dashboard' && currentUser && (
         <div>
           <div className="header">
-            <img src="/images/flexmeble_logo.jpg" alt="Flexmeble" style={{ height: '40px' }} />
+            <h1 style={{ margin: 0 }}>🏭 System</h1>
             <button className="btn btn-danger" onClick={handleLogout}>Wyloguj</button>
           </div>
 
@@ -589,7 +591,7 @@ export default function App() {
                     {currentUser.role === 'operator' && (
                       <>
                         <h4>Dodaj błąd</h4>
-                        <button className="btn btn-primary" onClick={() => handleStartCamera('orders')} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
+                        <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
                         <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Plik</button>
                         <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImage(f).then(setIssuePhoto).catch(() => alert('Błąd kompresji')); }} style={{ display: 'none' }} />
 
@@ -703,16 +705,14 @@ export default function App() {
                 <div className="card">
                   <h3>Fotografowanie #{photoSession.orderId}</h3>
 
-                  {!cameraActive ? (
-                    <button className="btn btn-primary" onClick={() => handleStartCamera('photos')} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>📷 Włącz kamerę</button>
-                  ) : (
-                    <>
-                      <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginBottom: '1rem' }}></video>
-                      <button className="btn btn-success" onClick={handleTakeWarehousePhoto} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>Zrób zdjęcie</button>
-                    </>
-                  )}
-
+                  <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginBottom: '1rem' }}></video>
                   <canvas ref={canvasRef}></canvas>
+
+                  {!cameraActive ? (
+                    <button className="btn btn-primary" onClick={handleStartCamera} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>📷 Włącz kamerę</button>
+                  ) : (
+                    <button className="btn btn-success" onClick={handleTakeWarehousePhoto} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>Zrób zdjęcie</button>
+                  )}
 
                   <button className="btn btn-primary" onClick={() => warehouseFileInputRef.current?.click()} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>📤 Z dysku</button>
                   <input ref={warehouseFileInputRef} type="file" accept="image/*" onChange={handlePhotoFileChange} style={{ display: 'none' }} />
