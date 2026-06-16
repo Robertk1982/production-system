@@ -57,28 +57,24 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   
   const [photoSession, setPhotoSession] = useState(null);
+  const [uploadMessage, setUploadMessage] = useState('');
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const warehouseFileInputRef = useRef(null);
   const streamRef = useRef(null);
-  const tokenClientRef = useRef(null);
 
-  // INIT - Load Google API + Users + Orders
   useEffect(() => {
-    // Load Google API
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
     script.defer = true;
     document.body.appendChild(script);
 
-    // Load saved token
     const savedToken = localStorage.getItem('google_access_token');
     if (savedToken) setAccessToken(savedToken);
 
-    // Load users
     const usersRef = collection(db, 'users');
     const unsubUsers = onSnapshot(usersRef, (snapshot) => {
       if (snapshot.empty) {
@@ -94,7 +90,6 @@ export default function App() {
       }
     });
 
-    // Load orders
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
       setOrders(snapshot.docs.map(d => ({ docId: d.id, ...d.data() })));
     });
@@ -111,7 +106,7 @@ export default function App() {
       setCurrentUser({ uid: user.id, ...user });
       setAppState('dashboard');
     } else {
-      alert('Błędne dane');
+      alert('Błędne dane logowania');
     }
   };
 
@@ -129,17 +124,15 @@ export default function App() {
     }
   };
 
-  // ===== ZAMÓWIENIA =====
-
   const handleStartOrder = async () => {
     if (!newOrderNum.trim()) {
-      alert('Wpisz numer');
+      alert('Wpisz numer zamówienia');
       return;
     }
     try {
       setIsLoading(true);
       if (orders.find(o => o.id === newOrderNum && o.status !== 'archived')) {
-        alert('Istnieje');
+        alert('Zamówienie już istnieje');
         return;
       }
       await addDoc(collection(db, 'orders'), {
@@ -185,7 +178,7 @@ export default function App() {
 
   const handleAddProblem = async () => {
     if (!issueDesc.trim()) {
-      alert('Wpisz opis');
+      alert('Wpisz opis błędu');
       return;
     }
     try {
@@ -198,8 +191,9 @@ export default function App() {
       });
       setIssueDesc('');
       setIssuePhoto(null);
+      alert('Błąd dodany');
     } catch (err) {
-      alert('Błąd');
+      alert('Błąd: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -219,7 +213,7 @@ export default function App() {
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { problems: updatedProblems });
     } catch (err) {
-      alert('Błąd');
+      alert('Błąd zmiany statusu');
     }
   };
 
@@ -228,48 +222,53 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       if ((order.problems || []).some(p => !(p.cut && p.repaired))) {
-        alert('Są nienaprawione elementy');
+        alert('Są nienaprawione elementy - nie można zamknąć');
         return;
       }
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { status: 'ready' });
       setSelectedOrderId(null);
+      alert('Zamówienie przeniesione do Gotowych');
     } catch (err) {
-      alert('Błąd');
+      alert('Błąd: ' + err.message);
     }
   };
 
-  // ===== GOTOWE =====
-
   const handleMoveFromReady = async (orderId, newStatus) => {
-    if (!window.confirm(`Przenieść do ${newStatus}?`)) return;
+    const label = newStatus === 'pallet' ? 'Paletowy' : 'Dedykowana';
+    if (!window.confirm(`Przenieść do ${label}?`)) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { status: newStatus });
+      alert(`Przeniesione do ${label}`);
     } catch (err) {
-      alert('Błąd');
+      alert('Błąd: ' + err.message);
     }
   };
 
   const handleRevertFromReady = async (orderId) => {
-    if (!window.confirm('Cofnąć?')) return;
+    if (!window.confirm('Cofnąć do Zamówień?')) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { status: 'in_progress' });
+      alert('Cofnięto');
     } catch (err) {
-      alert('Błąd');
+      alert('Błąd: ' + err.message);
     }
   };
 
-  // ===== ZDJĘCIA =====
-
   const uploadToGoogleDrive = async (orderId, photoBase64, photoNumber) => {
-    if (!accessToken) return false;
+    if (!accessToken) {
+      setUploadMessage('❌ Brak tokenu - autoryzuj Google Drive');
+      return false;
+    }
     try {
+      setUploadMessage(`⏳ Upload zdjęcia ${photoNumber}...`);
+      
       const byteCharacters = atob(photoBase64.split(',')[1]);
       const byteNumbers = new Array(byteCharacters.length);
       for (let i = 0; i < byteCharacters.length; i++) {
@@ -287,6 +286,7 @@ export default function App() {
 
       if (searchData.files && searchData.files.length > 0) {
         folderId = searchData.files[0].id;
+        setUploadMessage(`📁 Folder znaleziony: ${orderId}`);
       } else {
         const createResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
           method: 'POST',
@@ -294,7 +294,9 @@ export default function App() {
           body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder' })
         });
         const folderData = await createResponse.json();
+        if (!folderData.id) throw new Error('Nie udało się utworzyć folderu');
         folderId = folderData.id;
+        setUploadMessage(`📁 Folder utworzony: ${orderId}`);
       }
 
       const fileName = `${orderId}_${photoNumber}.jpg`;
@@ -309,8 +311,15 @@ export default function App() {
         body: form
       });
 
-      return uploadResponse.ok;
+      if (uploadResponse.ok) {
+        setUploadMessage(`✅ Zdjęcie ${photoNumber} uploadowane`);
+        return true;
+      } else {
+        setUploadMessage(`❌ Upload zdjęcia ${photoNumber} nie powiódł się`);
+        return false;
+      }
     } catch (err) {
+      setUploadMessage(`❌ Błąd uploadu: ${err.message}`);
       console.error('Upload error:', err);
       return false;
     }
@@ -318,28 +327,33 @@ export default function App() {
 
   const handleAuthorizeGoogle = () => {
     if (!window.google) {
-      alert('Google API się ładuje');
+      alert('Google API się ładuje, spróbuj za moment');
       return;
     }
 
-    tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+    const tokenClient = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CONFIG.CLIENT_ID,
       scope: 'https://www.googleapis.com/auth/drive',
       callback: (response) => {
         if (response.access_token) {
           setAccessToken(response.access_token);
           localStorage.setItem('google_access_token', response.access_token);
-          alert('✅ Autoryzacja OK!');
+          setUploadMessage('✅ Google Drive autoryzowany!');
+        } else {
+          setUploadMessage('❌ Autoryzacja nie powiodła się');
         }
       },
-      error_callback: (error) => alert('Błąd: ' + (error.message || JSON.stringify(error)))
+      error_callback: (error) => {
+        setUploadMessage(`❌ Błąd: ${error.message || JSON.stringify(error)}`);
+      }
     });
 
-    tokenClientRef.current.requestAccessToken();
+    tokenClient.requestAccessToken();
   };
 
   const handleStartPhotoSession = (orderId) => {
     setPhotoSession({ orderId, photos: [] });
+    setUploadMessage('');
     setCameraActive(false);
   };
 
@@ -361,11 +375,9 @@ export default function App() {
           ...prev,
           photos: [...prev.photos, photoBase64]
         }));
-      } else {
-        alert('Upload na Drive nie powiódł się');
       }
     } catch (err) {
-      alert('Błąd: ' + err.message);
+      setUploadMessage(`❌ Błąd: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -385,11 +397,9 @@ export default function App() {
           ...prev,
           photos: [...prev.photos, compressedBase64]
         }));
-      } else {
-        alert('Upload na Drive nie powiódł się');
       }
     } catch (err) {
-      alert('Błąd');
+      setUploadMessage(`❌ Błąd: ${err.message}`);
     } finally {
       setIsLoading(false);
       e.target.value = '';
@@ -406,7 +416,7 @@ export default function App() {
 
   const handleArchivePhotos = async () => {
     if (!photoSession || photoSession.photos.length < 3) {
-      alert('Min 3 zdjęcia');
+      alert('Min 3 zdjęcia potrzebne');
       return;
     }
 
@@ -418,13 +428,13 @@ export default function App() {
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
         photoCount: photoSession.photos.length,
-        photoArchived: true,
-        status: 'archived'
+        photoArchived: true
       });
 
       stopCamera();
       setPhotoSession(null);
-      alert('✓ Zdjęcia zarchiwizowane!');
+      setUploadMessage('');
+      alert(`✅ Zdjęcia zarchiwizowane! (${photoSession.photos.length} zdjęć)`);
     } catch (err) {
       alert('Błąd: ' + err.message);
     } finally {
@@ -432,13 +442,11 @@ export default function App() {
     }
   };
 
-  // ===== FILTERS =====
-
   const inProgressOrders = orders.filter(o => o.status === 'in_progress');
   const readyOrders = orders.filter(o => o.status === 'ready');
   const palletOrders = orders.filter(o => o.status === 'pallet');
   const dedicatedOrders = orders.filter(o => o.status === 'dedicated');
-  const archivedOrders = orders.filter(o => o.status === 'archived');
+  const archive2Orders = orders.filter(o => o.photoArchived === true);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -447,7 +455,7 @@ export default function App() {
     if (currentUser.role === 'operator') return ['orders'];
     if (currentUser.role === 'order_admin') return ['orders', 'ready', 'pallet', 'dedicated'];
     if (currentUser.role === 'warehouse') return ['photos'];
-    if (currentUser.role === 'admin') return ['orders', 'ready', 'pallet', 'dedicated', 'photos', 'archive'];
+    if (currentUser.role === 'admin') return ['orders', 'ready', 'pallet', 'dedicated', 'photos', 'archive2'];
     return [];
   };
 
@@ -458,12 +466,11 @@ export default function App() {
       <style>{`
         .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
         .btn { padding: 8px 16px; border: 1px solid #ddd; background: white; border-radius: 8px; cursor: pointer; }
-        .btn:disabled { opacity: 0.5; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-success { border-color: #4CAF50; color: #4CAF50; }
         .btn-danger { border-color: #f44336; color: #f44336; }
         .btn-primary { border-color: #2196F3; color: #2196F3; }
-        .form-group { margin-bottom: 1rem; }
-        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        input, textarea, select { padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
         .order-card { background: white; border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; cursor: pointer; border-radius: 8px; }
         .order-card.active { border: 2px solid #2196F3; background: #e3f2fd; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; background: white; padding: 1rem; border-radius: 8px; border: 1px solid #ddd; }
@@ -471,19 +478,23 @@ export default function App() {
         .tab-btn { padding: 8px 16px; border: 1px solid #ddd; background: white; border-radius: 8px; cursor: pointer; }
         .tab-btn.active { background: #2196F3; border-color: #2196F3; color: white; }
         .photo-preview { max-width: 100%; max-height: 150px; border-radius: 4px; margin: 0.5rem 0; }
-        video { width: 100%; height: auto; }
+        video { width: 100%; height: auto; background: #000; border-radius: 4px; }
         canvas { display: none; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .photo-item { background: #f0f0f0; padding: 0.75rem; border-radius: 4px; margin-bottom: 0.5rem; display: flex; justify-content: space-between; }
+        .msg { padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; font-size: 12px; }
+        .msg-info { background: #e3f2fd; color: #1976d2; }
+        .msg-success { background: #e8f5e9; color: #388e3c; }
+        .msg-error { background: #ffebee; color: #c62828; }
         @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
       `}</style>
 
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v16</h1>
-            <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} style={{ width: '100%', marginBottom: '1rem' }} />
-            <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} style={{ width: '100%', marginBottom: '1rem' }} />
+            <h1 style={{ textAlign: 'center' }}>🏭 System v17</h1>
+            <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
+            <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
           </div>
         </div>
@@ -502,7 +513,7 @@ export default function App() {
             {visibleTabs.includes('pallet') && <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => setActiveTab('pallet')}>🎨 Paletowy</button>}
             {visibleTabs.includes('dedicated') && <button className={`tab-btn ${activeTab === 'dedicated' ? 'active' : ''}`} onClick={() => setActiveTab('dedicated')}>📦 Dedykowana</button>}
             {visibleTabs.includes('photos') && <button className={`tab-btn ${activeTab === 'photos' ? 'active' : ''}`} onClick={() => setActiveTab('photos')}>📸 Zdjęcia</button>}
-            {visibleTabs.includes('archive') && <button className={`tab-btn ${activeTab === 'archive' ? 'active' : ''}`} onClick={() => setActiveTab('archive')}>📂 Archiwum2</button>}
+            {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => setActiveTab('archive2')}>📂 Archiwum2</button>}
           </div>
 
           {activeTab === 'orders' && (
@@ -555,7 +566,7 @@ export default function App() {
                         <h4>Dodaj błąd</h4>
                         <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
                         <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Plik</button>
-                        <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImage(f).then(setIssuePhoto).catch(() => alert('Błąd')); }} style={{ display: 'none' }} />
+                        <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImage(f).then(setIssuePhoto).catch(() => alert('Błąd kompresji')); }} style={{ display: 'none' }} />
 
                         {cameraActive && <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginTop: '1rem' }}></video>}
                         {cameraActive && <button className="btn btn-success" onClick={handleTakePhoto} style={{ width: '100%', marginTop: '0.5rem' }} disabled={isLoading}>Zrób zdjęcie</button>}
@@ -567,7 +578,7 @@ export default function App() {
                         <button className="btn btn-success" onClick={handleAddProblem} disabled={isLoading} style={{ width: '100%' }}>Dodaj błąd</button>
 
                         {!selectedOrder.problems?.some(p => !(p.cut && p.repaired)) && (
-                          <button className="btn btn-success" onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading} style={{ width: '100%', marginTop: '1rem' }}>Zlecenie zakończone</button>
+                          <button className="btn btn-success" onClick={() => handleCompleteOrder(selectedOrder.id)} disabled={isLoading} style={{ width: '100%', marginTop: '1rem' }}>✓ Zlecenie zakończone</button>
                         )}
                       </>
                     )}
@@ -629,24 +640,28 @@ export default function App() {
 
               {!accessToken && (
                 <div className="card" style={{ background: '#fff3cd', marginBottom: '1rem' }}>
-                  <p>Aby uploadować na Google Drive, najpierw autoryzuj dostęp.</p>
+                  <p style={{ margin: '0 0 1rem 0' }}>Aby uploadować na Google Drive, autoryzuj dostęp.</p>
                   <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ width: '100%' }}>🔐 Autoryzuj Google Drive</button>
+                </div>
+              )}
+
+              {uploadMessage && (
+                <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>
+                  {uploadMessage}
                 </div>
               )}
 
               {!photoSession ? (
                 <>
-                  <p style={{ fontSize: '12px', color: '#666', marginBottom: '1rem' }}>Wybierz zamówienie do sfotografowania</p>
-                  {orders.filter(o => !['archived'].includes(o.status)).map(order => (
+                  <p style={{ fontSize: '12px', color: '#666', marginBottom: '1rem' }}>Wybierz zamówienie do fotografowania</p>
+                  {orders.filter(o => !o.photoArchived).map(order => (
                     <div key={order.docId} className="card">
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
                           <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
                           <p style={{ fontSize: '12px', color: '#666', margin: 0 }}>Status: {order.status} | Zdjęcia: {order.photoCount || 0}</p>
                         </div>
-                        {!order.photoArchived && (
-                          <button className="btn btn-success" onClick={() => handleStartPhotoSession(order.id)} disabled={isLoading}>Zdjęcia</button>
-                        )}
+                        <button className="btn btn-success" onClick={() => handleStartPhotoSession(order.id)} disabled={isLoading}>Zdjęcia</button>
                       </div>
                     </div>
                   ))}
@@ -655,7 +670,7 @@ export default function App() {
                 <div className="card">
                   <h3>Fotografowanie #{photoSession.orderId}</h3>
 
-                  <video ref={videoRef} autoPlay playsInline style={{ width: '100%', background: '#000', marginBottom: '1rem', borderRadius: '4px' }}></video>
+                  <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginBottom: '1rem' }}></video>
                   <canvas ref={canvasRef}></canvas>
 
                   {!cameraActive ? (
@@ -667,7 +682,7 @@ export default function App() {
                   <button className="btn btn-primary" onClick={() => warehouseFileInputRef.current?.click()} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>📤 Z dysku</button>
                   <input ref={warehouseFileInputRef} type="file" accept="image/*" onChange={handlePhotoFileChange} style={{ display: 'none' }} />
 
-                  <div style={{ display: 'inline-block', padding: '6px 12px', background: '#2196F3', color: 'white', borderRadius: '4px', fontWeight: 'bold', marginTop: '1rem' }}>Zdjęcia: {photoSession.photos.length} / 3</div>
+                  <div style={{ display: 'inline-block', padding: '6px 12px', background: '#2196F3', color: 'white', borderRadius: '4px', fontWeight: 'bold' }}>Zdjęcia: {photoSession.photos.length} / 3</div>
 
                   {photoSession.photos.length > 0 && (
                     <div style={{ marginTop: '1rem', marginBottom: '1rem', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
@@ -681,26 +696,26 @@ export default function App() {
                   )}
 
                   {photoSession.photos.length >= 3 && (
-                    <button className="btn btn-success" onClick={handleArchivePhotos} disabled={isLoading} style={{ width: '100%', marginTop: '1rem' }}>✓ Zarchiwizuj</button>
+                    <button className="btn btn-success" onClick={handleArchivePhotos} disabled={isLoading} style={{ width: '100%', marginTop: '1rem' }}>✓ Zarchiwizuj zdjęcia</button>
                   )}
 
                   {photoSession.photos.length < 3 && (
-                    <div style={{ background: '#fff3cd', padding: '0.75rem', marginTop: '1rem', borderRadius: '4px', fontSize: '12px' }}>⚠️ Potrzebujesz {3 - photoSession.photos.length} zdjęcia(ć)</div>
+                    <div style={{ background: '#fff3cd', padding: '0.75rem', marginTop: '1rem', borderRadius: '4px', fontSize: '12px' }}>⚠️ Potrzebujesz {3 - photoSession.photos.length} zdjęcia(ć) więcej</div>
                   )}
 
-                  <button className="btn btn-danger" onClick={() => { stopCamera(); setPhotoSession(null); }} style={{ width: '100%', marginTop: '1rem' }} disabled={isLoading}>Anuluj</button>
+                  <button className="btn btn-danger" onClick={() => { stopCamera(); setPhotoSession(null); }} style={{ width: '100%', marginTop: '1rem' }} disabled={isLoading}>Anuluj sesję</button>
                 </div>
               )}
             </div>
           )}
 
-          {activeTab === 'archive' && (
+          {activeTab === 'archive2' && (
             <div>
-              <h2>Archiwum2 ({archivedOrders.length})</h2>
-              {archivedOrders.map(order => (
+              <h2>Archiwum2 ({archive2Orders.length})</h2>
+              {archive2Orders.map(order => (
                 <div key={order.docId} className="card">
                   <h3 style={{ margin: '0 0 8px 0' }}>#{order.id}</h3>
-                  {order.photoArchived && <p style={{ fontSize: '12px', color: '#4CAF50', margin: 0 }}>📸 {order.photoCount} zdjęcia wykonane</p>}
+                  <p style={{ fontSize: '12px', color: '#4CAF50', margin: 0 }}>📸 {order.photoCount} zdjęcia wykonane</p>
                 </div>
               ))}
             </div>
