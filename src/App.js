@@ -19,6 +19,34 @@ const GOOGLE_CONFIG = {
 const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 
+const ACCESS_FOLDERS = [
+  { key: 'orders', label: 'Zamówienia (widok)' },
+  { key: 'orders_manage', label: 'Zamówienia (dodawanie)' },
+  { key: 'ready', label: 'Gotowe' },
+  { key: 'pallet', label: 'Paletowy' },
+  { key: 'dedicated', label: 'Dedykowana' },
+  { key: 'photos', label: 'Zdjęcia' },
+  { key: 'raben', label: 'Raben (widok)' },
+  { key: 'raben_manage', label: 'Raben (zarządzanie)' },
+  { key: 'transport', label: 'Transporty własne (widok)' },
+  { key: 'transport_manage', label: 'Transporty własne (zarządzanie)' },
+  { key: 'archive2', label: 'Archiwum' },
+  { key: 'admin', label: 'Administracja' }
+];
+
+const DEFAULT_ACCESS = Object.fromEntries(ACCESS_FOLDERS.map(f => [f.key, false]));
+
+const getUserAccess = (user) => {
+  if (user.access) return user.access;
+  // Backward compat: convert old roles
+  const a = { ...DEFAULT_ACCESS };
+  if (user.role === 'operator') { a.orders = true; a.orders_manage = true; }
+  if (user.role === 'order_admin') { a.orders = true; a.ready = true; a.pallet = true; a.dedicated = true; }
+  if (user.role === 'warehouse') { a.photos = true; }
+  if (user.role === 'admin') { Object.keys(a).forEach(k => a[k] = true); }
+  return a;
+};
+
 const compressImage = (file) => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -81,6 +109,12 @@ export default function App() {
   const [uploadMessage, setUploadMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserAccess, setNewUserAccess] = useState({ ...DEFAULT_ACCESS });
+  const [editingUserId, setEditingUserId] = useState(null);
+  
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -103,10 +137,10 @@ export default function App() {
     const unsubUsers = onSnapshot(usersRef, (snapshot) => {
       if (snapshot.empty) {
         const demoUsers = [
-          { name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator' },
-          { name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator' },
-          { name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin' },
-          { name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin' }
+          { name: 'Operator 1', email: 'op1@company.com', password: '1234', role: 'operator', access: { ...DEFAULT_ACCESS, orders: true, orders_manage: true } },
+          { name: 'Operator 2', email: 'op2@company.com', password: '1234', role: 'operator', access: { ...DEFAULT_ACCESS, orders: true, orders_manage: true } },
+          { name: 'Admin Jakości', email: 'qa@company.com', password: '1234', role: 'order_admin', access: { ...DEFAULT_ACCESS, orders: true, ready: true, pallet: true, dedicated: true } },
+          { name: 'Admin', email: 'admin@company.com', password: '1234', role: 'admin', access: Object.fromEntries(ACCESS_FOLDERS.map(f => [f.key, true])) }
         ];
         demoUsers.forEach(u => addDoc(usersRef, u));
       } else {
@@ -488,22 +522,77 @@ export default function App() {
     }
   };
 
+  const handleAddUser = async () => {
+    if (!newUserName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) {
+      alert('Wypełnij wszystkie pola');
+      return;
+    }
+    try {
+      setIsLoading(true);
+      await addDoc(collection(db, 'users'), {
+        name: newUserName,
+        email: newUserEmail,
+        password: newUserPassword,
+        access: { ...newUserAccess }
+      });
+      setNewUserName('');
+      setNewUserEmail('');
+      setNewUserPassword('');
+      setNewUserAccess({ ...DEFAULT_ACCESS });
+      alert('✅ Użytkownik dodany!');
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleUpdateUserAccess = async (userId, access) => {
+    try {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, { access });
+      alert('✅ Uprawnienia zapisane');
+      setEditingUserId(null);
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
+  const handleDeleteUser = async (userId) => {
+    if (!window.confirm('Czy na pewno usunąć tego użytkownika?')) return;
+    try {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, { deleted: true });
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
+  };
+
   const sortByNum = (a, b) => parseInt(a.id) - parseInt(b.id);
   const inProgressOrders = orders.filter(o => o.status === 'in_progress').sort(sortByNum);
   const readyOrders = orders.filter(o => o.status === 'ready').sort(sortByNum);
   const palletOrders = orders.filter(o => o.status === 'pallet').sort(sortByNum);
   const dedicatedOrders = orders.filter(o => o.status === 'dedicated').sort(sortByNum);
   const archive2Orders = orders.filter(o => o.photoArchived === true).sort(sortByNum);
+  const rabenOrders = orders.filter(o => o.status === 'raben').sort(sortByNum);
+  const transportOrders = orders.filter(o => o.status === 'transport').sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
   const getTabs = () => {
     if (!currentUser) return [];
-    if (currentUser.role === 'operator') return ['orders'];
-    if (currentUser.role === 'order_admin') return ['orders', 'ready', 'pallet', 'dedicated'];
-    if (currentUser.role === 'warehouse') return ['photos'];
-    if (currentUser.role === 'admin') return ['orders', 'ready', 'pallet', 'dedicated', 'photos', 'archive2'];
-    return [];
+    const a = getUserAccess(currentUser);
+    const tabs = [];
+    if (a.orders || a.orders_manage) tabs.push('orders');
+    if (a.ready) tabs.push('ready');
+    if (a.pallet) tabs.push('pallet');
+    if (a.dedicated) tabs.push('dedicated');
+    if (a.photos) tabs.push('photos');
+    if (a.raben || a.raben_manage) tabs.push('raben');
+    if (a.transport || a.transport_manage) tabs.push('transport');
+    if (a.archive2) tabs.push('archive2');
+    if (a.admin) tabs.push('admin');
+    return tabs;
   };
 
   const visibleTabs = getTabs();
@@ -542,7 +631,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v19.4</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v20</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -563,7 +652,10 @@ export default function App() {
             {visibleTabs.includes('pallet') && <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => { setActiveTab('pallet'); setSearchQuery(''); }}>🎨 Paletowy</button>}
             {visibleTabs.includes('dedicated') && <button className={`tab-btn ${activeTab === 'dedicated' ? 'active' : ''}`} onClick={() => { setActiveTab('dedicated'); setSearchQuery(''); }}>📦 Dedykowana</button>}
             {visibleTabs.includes('photos') && <button className={`tab-btn ${activeTab === 'photos' ? 'active' : ''}`} onClick={() => { setActiveTab('photos'); setSearchQuery(''); }}>📸 Zdjęcia</button>}
-            {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => { setActiveTab('archive2'); setSearchQuery(''); }}>📂 Archiwum2</button>}
+            {visibleTabs.includes('raben') && <button className={`tab-btn ${activeTab === 'raben' ? 'active' : ''}`} onClick={() => { setActiveTab('raben'); setSearchQuery(''); }}>🚚 Raben</button>}
+            {visibleTabs.includes('transport') && <button className={`tab-btn ${activeTab === 'transport' ? 'active' : ''}`} onClick={() => { setActiveTab('transport'); setSearchQuery(''); }}>🚛 Transporty</button>}
+            {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => { setActiveTab('archive2'); setSearchQuery(''); }}>📂 Archiwum</button>}
+            {visibleTabs.includes('admin') && <button className={`tab-btn ${activeTab === 'admin' ? 'active' : ''}`} onClick={() => { setActiveTab('admin'); setSearchQuery(''); }}>⚙️ Admin</button>}
           </div>
 
           {activeTab === 'orders' && (
@@ -572,7 +664,7 @@ export default function App() {
                 <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
               </div>
 
-              {currentUser.role === 'operator' && (
+              {getUserAccess(currentUser).orders_manage && (
                 <div className="card">
                   <h3>Nowe zamówienie</h3>
                   <input type="text" value={newOrderNum} onChange={e => setNewOrderNum(e.target.value)} placeholder="Numer" style={{ width: '100%', marginBottom: '1rem' }} />
@@ -619,7 +711,7 @@ export default function App() {
                         </div>
                       )}
 
-                      {currentUser.role === 'operator' && (
+                      {getUserAccess(currentUser).orders_manage && (
                         <>
                           <h4>Dodaj błąd</h4>
                           <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
@@ -801,6 +893,111 @@ export default function App() {
                   <p style={{ fontSize: '12px', color: '#4CAF50', margin: 0 }}>📸 {order.photoCount} zdjęcia wykonane</p>
                 </div>
               ))}
+            </div>
+          )}
+
+          {activeTab === 'raben' && (
+            <div>
+              <h2>🚚 Raben ({rabenOrders.length})</h2>
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {rabenOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {rabenOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                <div key={order.docId} className="card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                      {order.uwagi && <p style={{ fontSize: '12px', color: '#1976d2', margin: '0 0 4px 0' }}>💬 {order.uwagi}</p>}
+                      {order.transportDate && <p style={{ fontSize: '11px', color: '#666', margin: 0 }}>📅 {order.transportDate}</p>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'transport' && (
+            <div>
+              <h2>🚛 Transporty własne ({transportOrders.length})</h2>
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {transportOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {transportOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                <div key={order.docId} className="card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                      {order.uwagi && <p style={{ fontSize: '12px', color: '#1976d2', margin: '0 0 4px 0' }}>💬 {order.uwagi}</p>}
+                      {order.transportDate && <p style={{ fontSize: '11px', color: '#666', margin: 0 }}>📅 {order.transportDate}</p>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'admin' && (
+            <div>
+              <h2>⚙️ Administracja</h2>
+
+              <div className="card">
+                <h3>Dodaj użytkownika</h3>
+                <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Imię i nazwisko" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '0.75rem' }} />
+                <p style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '0.5rem' }}>Dostęp do katalogów:</p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginBottom: '1rem' }}>
+                  {ACCESS_FOLDERS.map(f => (
+                    <label key={f.key} style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <input type="checkbox" checked={newUserAccess[f.key] || false} onChange={e => setNewUserAccess(prev => ({ ...prev, [f.key]: e.target.checked }))} />
+                      {f.label}
+                    </label>
+                  ))}
+                </div>
+                <button className="btn btn-success" onClick={handleAddUser} disabled={isLoading} style={{ width: '100%' }}>Dodaj użytkownika</button>
+              </div>
+
+              <h3 style={{ marginTop: '1.5rem' }}>Użytkownicy ({users.filter(u => !u.deleted).length})</h3>
+              {users.filter(u => !u.deleted).map(user => {
+                const ua = getUserAccess(user);
+                const isEditing = editingUserId === user.id;
+                return (
+                  <div key={user.id} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isEditing ? '1rem' : 0 }}>
+                      <div>
+                        <div style={{ fontWeight: 'bold' }}>{user.name}</div>
+                        <div style={{ fontSize: '12px', color: '#666' }}>{user.email}</div>
+                        {!isEditing && (
+                          <div style={{ fontSize: '11px', color: '#2196F3', marginTop: '4px' }}>
+                            {ACCESS_FOLDERS.filter(f => ua[f.key]).map(f => f.label).join(', ') || 'Brak dostępu'}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <button className="btn btn-primary" onClick={() => setEditingUserId(isEditing ? null : user.id)} style={{ padding: '4px 8px', fontSize: '11px' }}>{isEditing ? 'Zamknij' : 'Edytuj'}</button>
+                        <button className="btn btn-danger" onClick={() => handleDeleteUser(user.id)} style={{ padding: '4px 8px', fontSize: '11px' }}>Usuń</button>
+                      </div>
+                    </div>
+                    {isEditing && (
+                      <div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginBottom: '0.75rem' }}>
+                          {ACCESS_FOLDERS.map(f => (
+                            <label key={f.key} style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <input type="checkbox" checked={ua[f.key] || false} onChange={e => {
+                                const updated = { ...ua, [f.key]: e.target.checked };
+                                handleUpdateUserAccess(user.id, updated);
+                              }} />
+                              {f.label}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
