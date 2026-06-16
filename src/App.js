@@ -67,14 +67,17 @@ export default function App() {
   const streamRef = useRef(null);
 
   useEffect(() => {
+    // Load Google API
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
     script.defer = true;
     document.body.appendChild(script);
 
+    // NIE ładuj starego tokenu - zawsze czysty start!
     setAccessToken(null);
 
+    // Load users
     const usersRef = collection(db, 'users');
     const unsubUsers = onSnapshot(usersRef, (snapshot) => {
       if (snapshot.empty) {
@@ -90,6 +93,7 @@ export default function App() {
       }
     });
 
+    // Load orders
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
       setOrders(snapshot.docs.map(d => ({ docId: d.id, ...d.data() })));
     });
@@ -156,38 +160,26 @@ export default function App() {
 
   const handleStartCamera = async () => {
     try {
-      console.log('Starting camera...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { max: 1920, min: 640 }, height: { max: 1080, min: 480 } }
       });
-      console.log('Camera stream obtained:', stream);
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setCameraActive(true);
-        console.log('Camera activated');
       }
     } catch (err) {
-      console.error('Camera error:', err);
-      alert('❌ Brak dostępu do kamery: ' + err.message);
+      alert('Brak dostępu do kamery');
     }
   };
 
   const handleTakePhoto = () => {
-    if (!canvasRef.current || !videoRef.current) {
-      alert('❌ Kamera nie jest aktywna');
-      return;
-    }
+    if (!canvasRef.current || !videoRef.current) return;
     const ctx = canvasRef.current.getContext('2d');
     canvasRef.current.width = videoRef.current.videoWidth;
     canvasRef.current.height = videoRef.current.videoHeight;
     ctx.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
     setIssuePhoto(canvasRef.current.toDataURL('image/jpeg', 0.7));
-    
-    // Wyłącz kamerę po 2 sekundach
-    setTimeout(() => {
-      stopCamera();
-    }, 2000);
   };
 
   const handleAddProblem = async () => {
@@ -340,6 +332,7 @@ export default function App() {
         setUploadMessage(`✅ Zdjęcie ${photoNumber} uploadowane`);
         return true;
       } else {
+        const error = await uploadResponse.text();
         setUploadMessage(`❌ Upload zdjęcia ${photoNumber} nie powiódł się`);
         return false;
       }
@@ -509,10 +502,7 @@ export default function App() {
         .tab-btn { padding: 8px 16px; border: 1px solid #ddd; background: white; border-radius: 8px; cursor: pointer; }
         .tab-btn.active { background: #2196F3; border-color: #2196F3; color: white; }
         .photo-preview { max-width: 100%; max-height: 150px; border-radius: 4px; margin: 0.5rem 0; }
-        video { width: 100%; height: auto; background: #000; border-radius: 4px; position: relative; }
-        .video-container { position: relative; display: inline-block; width: 100%; margin-bottom: 1rem; }
-        .btn-camera { position: absolute; bottom: 10px; right: 10px; width: 60px; height: 60px; border-radius: 50%; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 28px; background: white; border: 2px solid #4CAF50; }
-        .btn-camera:hover { background: #f0f0f0; }
+        video { width: 100%; height: auto; background: #000; border-radius: 4px; }
         canvas { display: none; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .photo-item { background: #f0f0f0; padding: 0.75rem; border-radius: 4px; margin-bottom: 0.5rem; display: flex; justify-content: space-between; }
@@ -526,7 +516,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <h1 style={{ textAlign: 'center' }}>🏭 System v20</h1>
+            <h1 style={{ textAlign: 'center' }}>🏭 System v19.2</h1>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -605,16 +595,12 @@ export default function App() {
                     {currentUser.role === 'operator' && (
                       <>
                         <h4>Dodaj błąd</h4>
-                        <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem', marginBottom: '1rem' }} disabled={isLoading}>📷 Włącz kamerę</button>
+                        <button className="btn btn-primary" onClick={handleStartCamera} style={{ marginRight: '0.5rem' }} disabled={isLoading}>📷 Kamera</button>
                         <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>📤 Plik</button>
                         <input ref={fileInputRef} type="file" accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (f) compressImage(f).then(setIssuePhoto).catch(() => alert('Błąd kompresji')); }} style={{ display: 'none' }} />
 
-                        {cameraActive && (
-                          <div className="video-container">
-                            <video ref={videoRef} autoPlay playsInline></video>
-                            <button className="btn-camera" onClick={handleTakePhoto} disabled={isLoading} title="Zrób zdjęcie">📷</button>
-                          </div>
-                        )}
+                        {cameraActive && <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginTop: '1rem' }}></video>}
+                        {cameraActive && <button className="btn btn-success" onClick={handleTakePhoto} style={{ width: '100%', marginTop: '0.5rem' }} disabled={isLoading}>Zrób zdjęcie</button>}
 
                         <canvas ref={canvasRef}></canvas>
                         {issuePhoto && <img src={issuePhoto} className="photo-preview" alt="Issue" />}
@@ -723,16 +709,14 @@ export default function App() {
                 <div className="card">
                   <h3>Fotografowanie #{photoSession.orderId}</h3>
 
+                  <video ref={videoRef} autoPlay playsInline style={{ width: '100%', marginBottom: '1rem' }}></video>
+                  <canvas ref={canvasRef}></canvas>
+
                   {!cameraActive ? (
                     <button className="btn btn-primary" onClick={handleStartCamera} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>📷 Włącz kamerę</button>
                   ) : (
-                    <div className="video-container">
-                      <video ref={videoRef} autoPlay playsInline></video>
-                      <button className="btn-camera" onClick={handleTakeWarehousePhoto} disabled={isLoading} title="Zrób zdjęcie">📷</button>
-                    </div>
+                    <button className="btn btn-success" onClick={handleTakeWarehousePhoto} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>Zrób zdjęcie</button>
                   )}
-
-                  <canvas ref={canvasRef}></canvas>
 
                   <button className="btn btn-primary" onClick={() => warehouseFileInputRef.current?.click()} style={{ width: '100%', marginBottom: '1rem' }} disabled={isLoading}>📤 Z dysku</button>
                   <input ref={warehouseFileInputRef} type="file" accept="image/*" onChange={handlePhotoFileChange} style={{ display: 'none' }} />
