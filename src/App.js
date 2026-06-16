@@ -598,6 +598,7 @@ export default function ProductionSystem() {
       
       if (success) {
         const newPhotos = [...photoSession.photos, photoBase64];
+        console.log('✅ Photo added. Total photos:', newPhotos.length);
         setPhotoSession({
           orderId: photoSession.orderId,
           photos: newPhotos,
@@ -624,6 +625,7 @@ export default function ProductionSystem() {
         
         if (success) {
           const newPhotos = [...photoSession.photos, compressedBase64];
+          console.log('✅ File uploaded. Total photos:', newPhotos.length);
           setPhotoSession({
             orderId: photoSession.orderId,
             photos: newPhotos,
