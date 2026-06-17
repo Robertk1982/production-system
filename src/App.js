@@ -38,6 +38,7 @@ const ACCESS_FOLDERS = [
   { key: 'archive3', label: 'Archiwum akcesoriów' },
   { key: 'archive2', label: 'Archiwum zdjęć' },
   { key: 'archive1', label: 'Archiwum zamówień' },
+  { key: 'trudny_klient', label: 'Trudny klient' },
   { key: 'admin', label: 'Administracja' }
 ];
 
@@ -123,6 +124,9 @@ export default function App() {
   const [editingUserId, setEditingUserId] = useState(null);
   const [dateEditOrderId, setDateEditOrderId] = useState(null);
   const [wydaneOrderNum, setWydaneOrderNum] = useState('');
+  const [wydaneTermin, setWydaneTermin] = useState('');
+  const [tkOrderNum, setTkOrderNum] = useState('');
+  const [tkNote, setTkNote] = useState('');
   const [wydaneKanapka, setWydaneKanapka] = useState('');
 
   const historyEntry = (action) => ({
@@ -183,7 +187,7 @@ export default function App() {
       setAppState('dashboard');
       // Reset to first available tab for THIS user
       const a = getUserAccess(user);
-      const firstTab = (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.admin ? 'admin' : 'orders';
+      const firstTab = (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.trudny_klient ? 'trudny_klient' : a.admin ? 'admin' : 'orders';
       setActiveTab(firstTab);
     } else {
       alert('Błędne dane logowania');
@@ -757,16 +761,16 @@ export default function App() {
       if (existing) {
         if (existing.wydane) { alert('Zamówienie już jest w Wydanych'); return; }
         const orderRef = doc(db, 'orders', existing.docId);
-        await updateDoc(orderRef, { wydane: true, kanapka: wydaneKanapka || '', history: [...(existing.history || []), historyEntry('Wydano na produkcję')] });
+        await updateDoc(orderRef, { wydane: true, kanapka: wydaneKanapka || '', terminRealizacji: wydaneTermin || '', history: [...(existing.history || []), historyEntry('Wydano na produkcję')] });
       } else {
         await addDoc(collection(db, 'orders'), {
           id: wydaneOrderNum, status: 'none', createdAt: new Date().toISOString(),
           problems: [], photoCount: 0, photoArchived: false,
-          wydane: true, kanapka: wydaneKanapka || '',
+          wydane: true, kanapka: wydaneKanapka || '', terminRealizacji: wydaneTermin || '',
           history: [historyEntry('Wydano na produkcję')]
         });
       }
-      setWydaneOrderNum(''); setWydaneKanapka('');
+      setWydaneOrderNum(''); setWydaneKanapka(''); setWydaneTermin('');
     } catch (err) { alert('Błąd: ' + err.message); }
     finally { setIsLoading(false); }
   };
@@ -806,6 +810,63 @@ export default function App() {
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { akcesoriaArchived: true, history: [...(order.history || []), historyEntry('Akcesoria → archiwum')] });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
+  const handleAddTrudnyKlient = async () => {
+    if (!tkOrderNum.trim()) { alert('Wpisz numer zamówienia'); return; }
+    try {
+      setIsLoading(true);
+      const existing = orders.find(o => o.id === tkOrderNum);
+      const noteEntry = tkNote.trim() ? [{ text: tkNote, date: new Date().toISOString(), user: currentUser?.name || '?' }] : [];
+      if (existing) {
+        const orderRef = doc(db, 'orders', existing.docId);
+        await updateDoc(orderRef, {
+          trudnyKlient: true,
+          trudnyKlientNotatki: [...(existing.trudnyKlientNotatki || []), ...noteEntry],
+          history: [...(existing.history || []), historyEntry('Oznaczono jako Trudny klient')]
+        });
+      } else {
+        await addDoc(collection(db, 'orders'), {
+          id: tkOrderNum, status: 'none', createdAt: new Date().toISOString(),
+          problems: [], photoCount: 0, photoArchived: false,
+          trudnyKlient: true, trudnyKlientNotatki: noteEntry,
+          history: [historyEntry('Oznaczono jako Trudny klient')]
+        });
+      }
+      setTkOrderNum(''); setTkNote('');
+    } catch (err) { alert('Błąd: ' + err.message); }
+    finally { setIsLoading(false); }
+  };
+
+  const handleAddTkNote = async (orderId) => {
+    const note = window.prompt('Dodaj notatkę:');
+    if (!note?.trim()) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, {
+        trudnyKlientNotatki: [...(order.trudnyKlientNotatki || []), { text: note, date: new Date().toISOString(), user: currentUser?.name || '?' }],
+        history: [...(order.history || []), historyEntry(`Dodano notatkę TK: ${note.substring(0, 30)}...`)]
+      });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
+  const handlePasswordTerminEdit = (orderId) => {
+    const pwd = window.prompt('Wpisz hasło aby zmienić termin realizacji:');
+    if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Nieprawidłowe hasło'); return; }
+    setDateEditOrderId('termin_' + orderId);
+  };
+
+  const handleSaveTerminEdit = async (orderId, newDate) => {
+    if (!newDate) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { terminRealizacji: newDate, history: [...(order.history || []), historyEntry(`Zmieniono termin realizacji na: ${newDate}`)] });
+      setDateEditOrderId(null);
     } catch (err) { alert('Błąd: ' + err.message); }
   };
 
@@ -869,6 +930,7 @@ export default function App() {
   const wydaneOrders = orders.filter(o => o.wydane && !o.wycięte).sort(sortByKanapka);
   const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByKanapka);
   const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
+  const trudnyKlientOrders = orders.filter(o => o.trudnyKlient).sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -888,6 +950,7 @@ export default function App() {
     if (a.archive3) tabs.push('archive3');
     if (a.archive2) tabs.push('archive2');
     if (a.archive1) tabs.push('archive1');
+    if (a.trudny_klient) tabs.push('trudny_klient');
     if (a.admin) tabs.push('admin');
     return tabs;
   };
@@ -928,7 +991,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23.1</h2>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23.2</h2>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -956,6 +1019,7 @@ export default function App() {
             {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => { setActiveTab('archive2'); setSearchQuery(''); }}>📂 Archiwum zdjęć</button>}
             {visibleTabs.includes('archive3') && <button className={`tab-btn ${activeTab === 'archive3' ? 'active' : ''}`} onClick={() => { setActiveTab('archive3'); setSearchQuery(''); }}>🧩 Archiwum akces.</button>}
             {visibleTabs.includes('archive1') && <button className={`tab-btn ${activeTab === 'archive1' ? 'active' : ''}`} onClick={() => { setActiveTab('archive1'); setSearchQuery(''); }}>🗄️ Archiwum</button>}
+            {visibleTabs.includes('trudny_klient') && <button className={`tab-btn ${activeTab === 'trudny_klient' ? 'active' : ''}`} style={activeTab === 'trudny_klient' ? {background:'#f44336',borderColor:'#f44336',color:'white'} : {borderColor:'#f44336',color:'#f44336'}} onClick={() => { setActiveTab('trudny_klient'); setSearchQuery(''); }}>⚠️ Trudny klient</button>}
             {visibleTabs.includes('admin') && <button className={`tab-btn ${activeTab === 'admin' ? 'active' : ''}`} onClick={() => { setActiveTab('admin'); setSearchQuery(''); }}>⚙️ Admin</button>}
           </div>
 
@@ -967,6 +1031,8 @@ export default function App() {
                   <h3>Dodaj zamówienie</h3>
                   <input type="text" value={wydaneOrderNum} onChange={e => setWydaneOrderNum(e.target.value)} placeholder="Numer zamówienia" style={{ width: '100%', marginBottom: '0.5rem' }} />
                   <input type="text" value={wydaneKanapka} onChange={e => setWydaneKanapka(e.target.value)} placeholder="Numer kanapki (opcjonalnie)" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                  <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>📅 Termin realizacji:</label>
+                  <input type="date" value={wydaneTermin} onChange={e => setWydaneTermin(e.target.value)} style={{ width: '100%', marginBottom: '0.5rem' }} />
                   <button className="btn btn-success" onClick={handleAddWydane} disabled={isLoading} style={{ width: '100%' }}>Dodaj</button>
                 </div>
               )}
@@ -990,6 +1056,8 @@ export default function App() {
                           {order.kanapka ? <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>🥪 {order.kanapka}</span> : <span style={{ fontSize: '14px', color: '#f44336' }}>⚠️ Brak kanapki</span>}
                           {order.inAkcesoria && <span style={{ fontSize: '13px', color: '#388e3c' }} title="W akcesoriach">✅ akc.</span>}
                           {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
+                          {order.terminRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#1976d2' }} title="Termin realizacji">📅 {order.terminRealizacji}</span>}
+                          {order.brakAkcesoriow && <span style={{ fontSize: '12px', background: '#ffebee', color: '#c62828', padding: '1px 6px', borderRadius: '4px' }}>❌ brak akces.</span>}
                         </div>
                       </div>
                       <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -997,6 +1065,23 @@ export default function App() {
                   </div>
                   {selectedOrderId === order.id && (
                     <div className="card" style={{ borderLeft: '3px solid #ff9800' }}>
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📅 Termin realizacji:</label>
+                        {!order.terminRealizacji ? (
+                          <input type="date" value="" onChange={e => handleUpdateOrderField(order.id, 'terminRealizacji', e.target.value)} style={{ width: '100%' }} />
+                        ) : dateEditOrderId === 'termin_' + order.id ? (
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <input type="date" defaultValue={order.terminRealizacji} onChange={e => handleSaveTerminEdit(order.id, e.target.value)} style={{ flex: 1 }} />
+                            <button className="btn" onClick={() => setDateEditOrderId(null)} style={{ padding: '4px 8px', fontSize: '11px' }}>Anuluj</button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 'bold', fontSize: '16px' }}>{order.terminRealizacji}</span>
+                            <button className="btn" onClick={() => handlePasswordTerminEdit(order.id)} style={{ padding: '4px 8px', fontSize: '11px' }}>🔒 Zmień</button>
+                          </div>
+                        )}
+                      </div>
+
                       <div style={{ marginBottom: '1rem' }}>
                         <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🥪 Numer kanapki:</label>
                         {canEditKanapka ? (
@@ -1025,6 +1110,18 @@ export default function App() {
                             {canManageW && <button className="btn btn-danger" onClick={() => handleDeleteAttachment(order.id, idx)} disabled={isLoading} style={{ padding: '2px 6px', fontSize: '10px' }}>✕</button>}
                           </div>
                         ))}
+                      </div>
+
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Braki / uwagi:</label>
+                        <textarea value={order.akcesoriaUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'akcesoriaUwagi', e.target.value)} placeholder="Braki, uwagi..." style={{ width: '100%', height: '50px' }} />
+                      </div>
+
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <input type="checkbox" checked={order.brakAkcesoriow || false} onChange={() => handleUpdateOrderField(order.id, 'brakAkcesoriow', !(order.brakAkcesoriow || false))} />
+                          ❌ Brak akcesoriów
+                        </label>
                       </div>
 
                       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -1093,15 +1190,18 @@ export default function App() {
                         ))}
                       </div>
 
-                      <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem' }}>
+                      <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem', flexWrap: 'wrap' }}>
                         <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading} /> Złożone
+                          <input type="checkbox" checked={order.brakAkcesoriow || false} onChange={() => handleToggleAkcesoria(order.id, 'brakAkcesoriow')} disabled={isLoading} /> ❌ Brak akcesoriów
                         </label>
-                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading} /> Dołożone do palety
+                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.brakAkcesoriow ? 0.4 : 1 }}>
+                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading || order.brakAkcesoriow} /> Złożone
+                        </label>
+                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.brakAkcesoriow ? 0.4 : 1 }}>
+                          <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading || order.brakAkcesoriow} /> Dołożone do palety
                         </label>
                       </div>
-                      {order.złożone && order.dołożone && (
+                      {((order.złożone && order.dołożone) || order.brakAkcesoriow) && (
                         <button className="btn btn-success" onClick={() => handleMoveToArchive3(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Przenieś do archiwum</button>
                       )}
                     </div>
@@ -1131,6 +1231,7 @@ export default function App() {
                 <React.Fragment key={order.docId}>
                   <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ fontWeight: 'bold' }}>#{order.id}</div>
+                    {order.trudnyKlient && <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px', display: 'inline-block' }}>⚠️ TRUDNY KLIENT</div>}
                     <div style={{ fontSize: '12px', color: '#666' }}>
                       {order.problems?.length > 0 ? (
                         <>Błędy: {order.problems.length} | Naprawione: {order.problems.filter(p => p.cut && p.repaired).length}</>
@@ -1203,6 +1304,7 @@ export default function App() {
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                    {order.trudnyKlient && <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px', marginLeft: '8px' }}>⚠️ TRUDNY KLIENT</span>}
                     <div>
                       <button className="btn btn-primary" onClick={() => handleMoveFromReady(order.id, 'pallet')} disabled={isLoading} style={{ marginRight: '0.5rem' }}>🎨 Paletowy</button>
                       <button className="btn btn-primary" onClick={() => handleMoveFromReady(order.id, 'dedicated')} disabled={isLoading} style={{ marginRight: '0.5rem' }}>📦 Dedykowana</button>
@@ -1236,7 +1338,7 @@ export default function App() {
                     <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
-                          <h3 style={{ margin: '0 0 4px 0' }}>#{order.id}</h3>
+                          <h3 style={{ margin: '0 0 4px 0' }}>#{order.id} {order.trudnyKlient && <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px' }}>⚠️ TK</span>}</h3>
                           {order.uwagi && <p style={{ fontSize: '13px', color: '#1976d2', margin: '0 0 2px 0' }}>💬 {order.uwagi}</p>}
                           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                             {order.transportDate && <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#333' }}>📅 {order.transportDate}</span>}
@@ -1296,6 +1398,13 @@ export default function App() {
                             </div>
                           )}
                         </div>
+
+                        {order.trudnyKlient && (order.trudnyKlientNotatki || []).length > 0 && (
+                          <div style={{ background: '#ffebee', border: '1px solid #f44336', borderRadius: '4px', padding: '8px', marginBottom: '1rem' }}>
+                            <p style={{ margin: '0 0 4px 0', fontWeight: 'bold', color: '#c62828', fontSize: '12px' }}>⚠️ TRUDNY KLIENT</p>
+                            {order.trudnyKlientNotatki.map((n, i) => <p key={i} style={{ margin: '2px 0', fontSize: '11px' }}><span style={{ color: '#999' }}>{new Date(n.date).toLocaleDateString('pl-PL')}</span> {n.text}</p>)}
+                          </div>
+                        )}
 
                         {isPallet && (
                           <div style={{ borderTop: '1px solid #ddd', paddingTop: '1rem', marginBottom: '1rem' }}>
@@ -1511,7 +1620,7 @@ export default function App() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div style={{ flex: 1 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                            <h3 style={{ margin: 0 }}>#{order.id} {order.trudnyKlient && <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px' }}>⚠️ TK</span>}</h3>
                             {order.transportDate && <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>📅 {order.transportDate}</span>}
                             {!isRaben && order.paleta && <span style={{ fontSize: '15px', background: '#e1bee7', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>P{order.paleta}</span>}
                             {order.spakowane && <span style={{ fontSize: '15px', background: '#fff3cd', padding: '2px 8px', borderRadius: '4px' }} title="Spakowane">📦</span>}
@@ -1529,6 +1638,13 @@ export default function App() {
 
                     {selectedOrderId === order.id && (
                       <div className="card" style={{ borderLeft: `3px solid ${isRaben ? '#ff9800' : '#9c27b0'}` }}>
+
+                        {order.trudnyKlient && (order.trudnyKlientNotatki || []).length > 0 && (
+                          <div style={{ background: '#ffebee', border: '1px solid #f44336', borderRadius: '4px', padding: '8px', marginBottom: '1rem' }}>
+                            <p style={{ margin: '0 0 4px 0', fontWeight: 'bold', color: '#c62828', fontSize: '12px' }}>⚠️ TRUDNY KLIENT</p>
+                            {order.trudnyKlientNotatki.map((n, i) => <p key={i} style={{ margin: '2px 0', fontSize: '11px' }}><span style={{ color: '#999' }}>{new Date(n.date).toLocaleDateString('pl-PL')}</span> {n.text}</p>)}
+                          </div>
+                        )}
 
                         <div style={{ marginBottom: '1rem' }}>
                           <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📅 Data transportu:</label>
@@ -1631,6 +1747,40 @@ export default function App() {
               </div>
             );
           })()}
+
+          {activeTab === 'trudny_klient' && (
+            <div>
+              <h2 style={{ color: '#c62828' }}>⚠️ Trudny klient ({trudnyKlientOrders.length})</h2>
+              <div className="card">
+                <h3>Dodaj zamówienie</h3>
+                <input type="text" value={tkOrderNum} onChange={e => setTkOrderNum(e.target.value)} placeholder="Numer zamówienia" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                <textarea value={tkNote} onChange={e => setTkNote(e.target.value)} placeholder="Notatka (opcjonalnie)" style={{ width: '100%', height: '60px', marginBottom: '0.5rem' }} />
+                <button className="btn btn-danger" onClick={handleAddTrudnyKlient} disabled={isLoading} style={{ width: '100%' }}>⚠️ Dodaj</button>
+              </div>
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {trudnyKlientOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {trudnyKlientOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                <div key={order.docId} className="card" style={{ borderLeft: '3px solid #f44336' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <h3 style={{ margin: 0, color: '#c62828' }}>⚠️ #{order.id}</h3>
+                    <button className="btn btn-primary" onClick={() => handleAddTkNote(order.id)} disabled={isLoading} style={{ padding: '4px 12px', fontSize: '12px' }}>+ Notatka</button>
+                  </div>
+                  {(order.trudnyKlientNotatki || []).length === 0 && <p style={{ fontSize: '12px', color: '#999' }}>Brak notatek</p>}
+                  {(order.trudnyKlientNotatki || []).map((n, idx) => (
+                    <div key={idx} style={{ background: '#ffebee', padding: '8px 12px', borderRadius: '4px', marginBottom: '4px', fontSize: '13px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+                        <span style={{ fontWeight: 'bold', color: '#c62828' }}>{n.user}</span>
+                        <span style={{ fontSize: '11px', color: '#999' }}>{new Date(n.date).toLocaleString('pl-PL')}</span>
+                      </div>
+                      <p style={{ margin: 0 }}>{n.text}</p>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
 
           {activeTab === 'admin' && (
             <div>
