@@ -22,6 +22,9 @@ const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 
 const ACCESS_FOLDERS = [
+  { key: 'wydane', label: 'Wydane na produkcję (widok)' },
+  { key: 'wydane_manage', label: 'Wydane na produkcję (zarządzanie)' },
+  { key: 'akcesoria', label: 'Akcesoria' },
   { key: 'orders', label: 'Zamówienia (widok)' },
   { key: 'orders_manage', label: 'Zamówienia (dodawanie)' },
   { key: 'ready', label: 'Gotowe' },
@@ -32,6 +35,7 @@ const ACCESS_FOLDERS = [
   { key: 'raben_manage', label: 'Raben (zarządzanie)' },
   { key: 'transport', label: 'Transporty własne (widok)' },
   { key: 'transport_manage', label: 'Transporty własne (zarządzanie)' },
+  { key: 'archive3', label: 'Archiwum akcesoriów' },
   { key: 'archive2', label: 'Archiwum zdjęć' },
   { key: 'archive1', label: 'Archiwum zamówień' },
   { key: 'admin', label: 'Administracja' }
@@ -118,6 +122,8 @@ export default function App() {
   const [newUserAccess, setNewUserAccess] = useState({ ...DEFAULT_ACCESS });
   const [editingUserId, setEditingUserId] = useState(null);
   const [dateEditOrderId, setDateEditOrderId] = useState(null);
+  const [wydaneOrderNum, setWydaneOrderNum] = useState('');
+  const [wydaneKanapka, setWydaneKanapka] = useState('');
 
   const historyEntry = (action) => ({
     timestamp: new Date().toISOString(),
@@ -177,7 +183,7 @@ export default function App() {
       setAppState('dashboard');
       // Reset to first available tab for THIS user
       const a = getUserAccess(user);
-      const firstTab = (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.admin ? 'admin' : 'orders';
+      const firstTab = (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.admin ? 'admin' : 'orders';
       setActiveTab(firstTab);
     } else {
       alert('Błędne dane logowania');
@@ -326,7 +332,9 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { status: newStatus, history: [...(order.history || []), historyEntry(`Przeniesiono do ${newStatus === 'pallet' ? 'Paletowy' : 'Dedykowana'}`)] });
+      const updates = { status: newStatus, history: [...(order.history || []), historyEntry(`Przeniesiono do ${newStatus === 'pallet' ? 'Paletowy' : 'Dedykowana'}`)] };
+      if (newStatus === 'pallet' && order.photoArchived) { updates.spakowane = true; }
+      await updateDoc(orderRef, updates);
       alert(`✅ Zamówienie przeniesione`);
     } catch (err) {
       alert('Błąd: ' + err.message);
@@ -737,6 +745,66 @@ export default function App() {
     }
   };
 
+  const handleAddWydane = async () => {
+    if (!wydaneOrderNum.trim()) { alert('Wpisz numer zamówienia'); return; }
+    try {
+      setIsLoading(true);
+      const existing = orders.find(o => o.id === wydaneOrderNum);
+      if (existing) {
+        if (existing.wydane) { alert('Zamówienie już jest w Wydanych'); return; }
+        const orderRef = doc(db, 'orders', existing.docId);
+        await updateDoc(orderRef, { wydane: true, kanapka: wydaneKanapka || '', history: [...(existing.history || []), historyEntry('Wydano na produkcję')] });
+      } else {
+        await addDoc(collection(db, 'orders'), {
+          id: wydaneOrderNum, status: 'none', createdAt: new Date().toISOString(),
+          problems: [], photoCount: 0, photoArchived: false,
+          wydane: true, kanapka: wydaneKanapka || '',
+          history: [historyEntry('Wydano na produkcję')]
+        });
+      }
+      setWydaneOrderNum(''); setWydaneKanapka('');
+    } catch (err) { alert('Błąd: ' + err.message); }
+    finally { setIsLoading(false); }
+  };
+
+  const handleAddToAkcesoria = async (orderId) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    if (!order.kanapka) { alert('Uzupełnij numer kanapki'); return; }
+    try {
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { inAkcesoria: true, history: [...(order.history || []), historyEntry('Dodano do akcesoriów')] });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
+  const handleWyciete = async (orderId) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    try {
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { wycięte: true, inAkcesoria: true, history: [...(order.history || []), historyEntry('Wycięte + przeniesiono do akcesoriów')] });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
+  const handleToggleAkcesoria = async (orderId, field) => {
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { [field]: !(order[field] || false), history: [...(order.history || []), historyEntry(`${!(order[field] || false) ? 'Zaznaczono' : 'Odznaczono'}: ${field}`)] });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
+  const handleMoveToArchive3 = async (orderId) => {
+    if (!window.confirm(`Przenieść zamówienie #${orderId} do archiwum akcesoriów?`)) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { akcesoriaArchived: true, history: [...(order.history || []), historyEntry('Akcesoria → archiwum')] });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
   const handleTransferOrder = (orderId, fromStatus) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
@@ -757,10 +825,14 @@ export default function App() {
     if (choice === '3') {
       if (!window.confirm(`Czy na pewno chcesz zmienić rodzaj transportu na "${altLabel}"?`)) return;
       const orderRef = doc(db, 'orders', order.docId);
-      updateDoc(orderRef, { status: altTarget, history: [...(order.history || []), historyEntry(`Przeniesiono do ${altLabel} (zmiana rodzaju)`)] }).then(() => alert(`✅ Przeniesiono do ${altLabel}`));
+      const updates = { status: altTarget, history: [...(order.history || []), historyEntry(`Przeniesiono do ${altLabel} (zmiana rodzaju)`)] };
+      if (altTarget === 'raben' && order.photoArchived) { updates.spakowane = true; }
+      updateDoc(orderRef, updates).then(() => alert(`✅ Przeniesiono do ${altLabel}`));
     } else {
       const orderRef = doc(db, 'orders', order.docId);
-      updateDoc(orderRef, { status: defaultTarget, history: [...(order.history || []), historyEntry(`Przeniesiono do ${defaultLabel}`)] }).then(() => alert(`✅ Przeniesiono do ${defaultLabel}`));
+      const updates = { status: defaultTarget, history: [...(order.history || []), historyEntry(`Przeniesiono do ${defaultLabel}`)] };
+      if (defaultTarget === 'raben' && order.photoArchived) { updates.spakowane = true; }
+      updateDoc(orderRef, updates).then(() => alert(`✅ Przeniesiono do ${defaultLabel}`));
     }
   };
 
@@ -786,6 +858,9 @@ export default function App() {
   const rabenOrders = orders.filter(o => o.status === 'raben').sort(sortByDate);
   const transportOrders = orders.filter(o => o.status === 'transport').sort(sortByDateThenPaleta);
   const archive1Orders = orders.filter(o => o.status === 'archived').sort(sortByNum);
+  const wydaneOrders = orders.filter(o => o.wydane && !o.wycięte).sort(sortByNum);
+  const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByNum);
+  const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -793,6 +868,8 @@ export default function App() {
     if (!currentUser) return [];
     const a = getUserAccess(currentUser);
     const tabs = [];
+    if (a.wydane || a.wydane_manage) tabs.push('wydane');
+    if (a.akcesoria) tabs.push('akcesoria');
     if (a.orders || a.orders_manage) tabs.push('orders');
     if (a.ready) tabs.push('ready');
     if (a.pallet) tabs.push('pallet');
@@ -800,6 +877,7 @@ export default function App() {
     if (a.photos) tabs.push('photos');
     if (a.raben || a.raben_manage) tabs.push('raben');
     if (a.transport || a.transport_manage) tabs.push('transport');
+    if (a.archive3) tabs.push('archive3');
     if (a.archive2) tabs.push('archive2');
     if (a.archive1) tabs.push('archive1');
     if (a.admin) tabs.push('admin');
@@ -842,7 +920,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v22.3</h2>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23</h2>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -858,6 +936,8 @@ export default function App() {
           </div>
 
           <div className="tabs">
+            {visibleTabs.includes('wydane') && <button className={`tab-btn ${activeTab === 'wydane' ? 'active' : ''}`} onClick={() => { setActiveTab('wydane'); setSearchQuery(''); }}>🔧 Wydane</button>}
+            {visibleTabs.includes('akcesoria') && <button className={`tab-btn ${activeTab === 'akcesoria' ? 'active' : ''}`} onClick={() => { setActiveTab('akcesoria'); setSearchQuery(''); }}>🧩 Akcesoria</button>}
             {visibleTabs.includes('orders') && <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => { setActiveTab('orders'); setSearchQuery(''); }}>📦 Zamówienia</button>}
             {visibleTabs.includes('ready') && <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => { setActiveTab('ready'); setSearchQuery(''); }}>📋 Gotowe</button>}
             {visibleTabs.includes('pallet') && <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => { setActiveTab('pallet'); setSearchQuery(''); }}>🎨 Paletowy</button>}
@@ -866,9 +946,107 @@ export default function App() {
             {visibleTabs.includes('raben') && <button className={`tab-btn ${activeTab === 'raben' ? 'active' : ''}`} onClick={() => { setActiveTab('raben'); setSearchQuery(''); }}>🚚 Raben</button>}
             {visibleTabs.includes('transport') && <button className={`tab-btn ${activeTab === 'transport' ? 'active' : ''}`} onClick={() => { setActiveTab('transport'); setSearchQuery(''); }}>🚛 Transporty</button>}
             {visibleTabs.includes('archive2') && <button className={`tab-btn ${activeTab === 'archive2' ? 'active' : ''}`} onClick={() => { setActiveTab('archive2'); setSearchQuery(''); }}>📂 Archiwum zdjęć</button>}
+            {visibleTabs.includes('archive3') && <button className={`tab-btn ${activeTab === 'archive3' ? 'active' : ''}`} onClick={() => { setActiveTab('archive3'); setSearchQuery(''); }}>🧩 Archiwum akces.</button>}
             {visibleTabs.includes('archive1') && <button className={`tab-btn ${activeTab === 'archive1' ? 'active' : ''}`} onClick={() => { setActiveTab('archive1'); setSearchQuery(''); }}>🗄️ Archiwum</button>}
             {visibleTabs.includes('admin') && <button className={`tab-btn ${activeTab === 'admin' ? 'active' : ''}`} onClick={() => { setActiveTab('admin'); setSearchQuery(''); }}>⚙️ Admin</button>}
           </div>
+
+          {activeTab === 'wydane' && (
+            <div>
+              <h2>🔧 Wydane na produkcję ({wydaneOrders.length})</h2>
+              {getUserAccess(currentUser).wydane_manage && (
+                <div className="card">
+                  <h3>Dodaj zamówienie</h3>
+                  <input type="text" value={wydaneOrderNum} onChange={e => setWydaneOrderNum(e.target.value)} placeholder="Numer zamówienia" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                  <input type="text" value={wydaneKanapka} onChange={e => setWydaneKanapka(e.target.value)} placeholder="Numer kanapki (opcjonalnie)" style={{ width: '100%', marginBottom: '0.5rem' }} />
+                  <button className="btn btn-success" onClick={handleAddWydane} disabled={isLoading} style={{ width: '100%' }}>Dodaj</button>
+                </div>
+              )}
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {wydaneOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {wydaneOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                <React.Fragment key={order.docId}>
+                  <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <h3 style={{ margin: '0 0 2px 0' }}>#{order.id}</h3>
+                        <div style={{ fontSize: '14px' }}>
+                          {order.kanapka ? <span style={{ fontWeight: 'bold', color: '#333' }}>🥪 Kanapka: {order.kanapka}</span> : <span style={{ color: '#f44336' }}>⚠️ Brak kanapki</span>}
+                          {order.inAkcesoria && <span style={{ marginLeft: '8px', color: '#388e3c' }}>✅ w akcesoriach</span>}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
+                    </div>
+                  </div>
+                  {selectedOrderId === order.id && (
+                    <div className="card" style={{ borderLeft: '3px solid #ff9800' }}>
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🥪 Numer kanapki:</label>
+                        {getUserAccess(currentUser).wydane_manage ? (
+                          <input type="text" value={order.kanapka || ''} onChange={e => handleUpdateOrderField(order.id, 'kanapka', e.target.value)} placeholder="Wpisz numer kanapki..." style={{ width: '100%' }} />
+                        ) : (
+                          <span>{order.kanapka || '—'}</span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        {getUserAccess(currentUser).wydane_manage && (
+                          <button className="btn btn-success" onClick={() => handleAddToAkcesoria(order.id)} disabled={isLoading || !order.kanapka || order.inAkcesoria} style={{ flex: 1 }}>🧩 Dodaj do akcesoriów</button>
+                        )}
+                        <button className="btn btn-danger" onClick={() => handleWyciete(order.id)} disabled={isLoading} style={{ flex: 1 }}>✂️ Wycięte</button>
+                      </div>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'akcesoria' && (
+            <div>
+              <h2>🧩 Akcesoria ({akcesoriaOrders.length})</h2>
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {akcesoriaOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {akcesoriaOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                <React.Fragment key={order.docId}>
+                  <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <h3 style={{ margin: '0 0 2px 0' }}>#{order.id} <span style={{ fontSize: '13px', color: '#666' }}>🥪 {order.kanapka}</span></h3>
+                        <div style={{ display: 'flex', gap: '8px', fontSize: '14px' }}>
+                          {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>✅ złożone</span>}
+                          {order.dołożone && <span style={{ background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>📦 dołożone</span>}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
+                    </div>
+                  </div>
+                  {selectedOrderId === order.id && (
+                    <div className="card" style={{ borderLeft: '3px solid #9c27b0' }}>
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Braki / uwagi:</label>
+                        <textarea value={order.akcesoriaUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'akcesoriaUwagi', e.target.value)} placeholder="Braki, uwagi..." style={{ width: '100%', height: '60px' }} />
+                      </div>
+                      <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading} /> Złożone
+                        </label>
+                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading} /> Dołożone do palety
+                        </label>
+                      </div>
+                      {order.złożone && order.dołożone && (
+                        <button className="btn btn-success" onClick={() => handleMoveToArchive3(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Przenieś do archiwum</button>
+                      )}
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          )}
 
           {activeTab === 'orders' && (
             <div>
@@ -1001,6 +1179,8 @@ export default function App() {
                             {order.transportDate && <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#333' }}>📅 {order.transportDate}</span>}
                             {order.dateConfirmed && <span style={{ fontSize: '13px', color: '#388e3c' }}>✅ potwierdzona</span>}
                             {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }}>📎 {order.attachments.length}</span>}
+                            {order.złożone && <span style={{ fontSize: '13px', background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>🧩 złożone</span>}
+                            {order.dołożone && <span style={{ fontSize: '13px', background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>📦 dołożone</span>}
                           </div>
                         </div>
                         <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -1053,6 +1233,20 @@ export default function App() {
                             </div>
                           )}
                         </div>
+
+                        {isPallet && (
+                          <div style={{ borderTop: '1px solid #ddd', paddingTop: '1rem', marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '8px' }}>Status Raben (tylko odczyt):</label>
+                            <div style={{ display: 'flex', gap: '16px' }}>
+                              <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.7 }}>
+                                <input type="checkbox" checked={order.spakowane || false} disabled /> Spakowane {order.spakowane && order.photoArchived && <span style={{ fontSize: '10px', color: '#388e3c' }}>(auto-zdjęcia)</span>}
+                              </label>
+                              <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.7 }}>
+                                <input type="checkbox" checked={order.wyslane || false} disabled /> Wysłane
+                              </label>
+                            </div>
+                          </div>
+                        )}
 
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
                           <button className="btn btn-success" onClick={() => handleTransferOrder(order.id, isPallet ? 'pallet' : 'dedicated')} disabled={isLoading || !order.dateConfirmed} style={{ flex: 1 }}>
@@ -1204,6 +1398,23 @@ export default function App() {
             </div>
           )}
 
+          {activeTab === 'archive3' && (
+            <div>
+              <h2>🧩 Archiwum akcesoriów ({archive3Orders.length})</h2>
+              <div className="search-box">
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+              </div>
+              {archive3Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+              {archive3Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+                <div key={order.docId} className="card">
+                  <h3 style={{ margin: '0 0 4px 0' }}>#{order.id} <span style={{ fontSize: '13px', color: '#666' }}>🥪 {order.kanapka}</span></h3>
+                  {order.akcesoriaUwagi && <p style={{ fontSize: '12px', color: '#555', margin: '0 0 4px 0' }}>📝 {order.akcesoriaUwagi}</p>}
+                  <div style={{ fontSize: '12px', color: '#388e3c' }}>✅ złożone ✅ dołożone</div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {(activeTab === 'raben' || activeTab === 'transport') && (() => {
             const isRaben = activeTab === 'raben';
             const tabOrders = isRaben ? rabenOrders : transportOrders;
@@ -1244,6 +1455,8 @@ export default function App() {
                             {order.wyslane && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }}>🚚</span>}
                             {order.dostarczone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }}>✅</span>}
                             {order.attachments?.length > 0 && <span style={{ fontSize: '15px', color: '#666' }}>📎 {order.attachments.length}</span>}
+                            {order.złożone && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }}>🧩</span>}
+                            {order.dołożone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }}>📦dł</span>}
                           </div>
                           {order.uwagi && <p style={{ fontSize: '13px', color: '#1976d2', margin: '4px 0 0 0' }}>💬 {order.uwagi}</p>}
                         </div>
