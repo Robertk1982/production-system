@@ -530,11 +530,13 @@ export default function App() {
       if (!order) return;
 
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, {
+      const photoUpdates = {
         photoCount: photoSession.photos.length,
         photoArchived: true,
         history: [...(order.history || []), historyEntry(`Zarchiwizowano ${photoSession.photos.length} zdjęć`)]
-      });
+      };
+      if (order.status === 'pallet' || order.status === 'raben') { photoUpdates.spakowane = true; }
+      await updateDoc(orderRef, photoUpdates);
 
       stopCamera();
       setPhotoSession(null);
@@ -630,8 +632,10 @@ export default function App() {
   };
 
   const ATTACHMENTS_FOLDER_ID = '1EtAmIu6Cr8f3jD9JQC3G3nNE0M3Gf_bD';
+  const WYDANE_FOLDER_ID = '1tpZdY9yDGnbXUD-5e4ev_Sk962Z4MnMf';
 
-  const handleUploadAttachment = async (orderId, file) => {
+  const handleUploadAttachment = async (orderId, file, targetFolderId) => {
+    const driveFolderId = targetFolderId || ATTACHMENTS_FOLDER_ID;
     if (!accessToken) { alert('Najpierw autoryzuj Google Drive w zakładce Zdjęcia'); return; }
     try {
       setIsLoading(true);
@@ -639,7 +643,7 @@ export default function App() {
 
       // Find or create order subfolder in attachments folder
       const searchResp = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and '${ATTACHMENTS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
+        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and '${driveFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       const searchData = await searchResp.json();
@@ -651,7 +655,7 @@ export default function App() {
         const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
           method: 'POST',
           headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder', parents: [ATTACHMENTS_FOLDER_ID] })
+          body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder', parents: [driveFolderId] })
         });
         const folderData = await createResp.json();
         if (!folderData.id) throw new Error('Nie udało się utworzyć folderu');
@@ -770,7 +774,6 @@ export default function App() {
   const handleAddToAkcesoria = async (orderId) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
-    if (!order.kanapka) { alert('Uzupełnij numer kanapki'); return; }
     try {
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { inAkcesoria: true, history: [...(order.history || []), historyEntry('Dodano do akcesoriów')] });
@@ -780,6 +783,7 @@ export default function App() {
   const handleWyciete = async (orderId) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
+    if (!order.kanapka) { alert('Uzupełnij numer kanapki przed wycięciem'); return; }
     try {
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, { wycięte: true, inAkcesoria: true, history: [...(order.history || []), historyEntry('Wycięte + przeniesiono do akcesoriów')] });
@@ -850,6 +854,10 @@ export default function App() {
     const parsePaleta = (p) => { if (!p) return 999; const parts = String(p).split('.'); return parseInt(parts[0]) * 100 + parseInt(parts[1] || 0); };
     return parsePaleta(a.paleta) - parsePaleta(b.paleta);
   };
+  const sortByKanapka = (a, b) => {
+    const getNum = (k) => { if (!k) return 999999; return parseInt(k.replace(/[^0-9]/g, '')) || 999999; };
+    return getNum(a.kanapka) - getNum(b.kanapka);
+  };
   const inProgressOrders = orders.filter(o => o.status === 'in_progress').sort(sortByNum);
   const readyOrders = orders.filter(o => o.status === 'ready').sort(sortByNum);
   const palletOrders = orders.filter(o => o.status === 'pallet').sort(sortByDateThenNum);
@@ -858,8 +866,8 @@ export default function App() {
   const rabenOrders = orders.filter(o => o.status === 'raben').sort(sortByDate);
   const transportOrders = orders.filter(o => o.status === 'transport').sort(sortByDateThenPaleta);
   const archive1Orders = orders.filter(o => o.status === 'archived').sort(sortByNum);
-  const wydaneOrders = orders.filter(o => o.wydane && !o.wycięte).sort(sortByNum);
-  const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByNum);
+  const wydaneOrders = orders.filter(o => o.wydane && !o.wycięte).sort(sortByKanapka);
+  const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByKanapka);
   const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
@@ -920,7 +928,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23</h2>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23.1</h2>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -962,19 +970,26 @@ export default function App() {
                   <button className="btn btn-success" onClick={handleAddWydane} disabled={isLoading} style={{ width: '100%' }}>Dodaj</button>
                 </div>
               )}
+
+              {uploadMessage && <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>{uploadMessage}</div>}
+
               <div className="search-box">
                 <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
               </div>
               {wydaneOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {wydaneOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+              {wydaneOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
+                const canManageW = getUserAccess(currentUser).wydane_manage;
+                const canEditKanapka = canManageW || (!order.kanapkaSetByManage && !order.kanapka);
+                return (
                 <React.Fragment key={order.docId}>
                   <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
                         <h3 style={{ margin: '0 0 2px 0' }}>#{order.id}</h3>
-                        <div style={{ fontSize: '14px' }}>
-                          {order.kanapka ? <span style={{ fontWeight: 'bold', color: '#333' }}>🥪 Kanapka: {order.kanapka}</span> : <span style={{ color: '#f44336' }}>⚠️ Brak kanapki</span>}
-                          {order.inAkcesoria && <span style={{ marginLeft: '8px', color: '#388e3c' }}>✅ w akcesoriach</span>}
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          {order.kanapka ? <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>🥪 {order.kanapka}</span> : <span style={{ fontSize: '14px', color: '#f44336' }}>⚠️ Brak kanapki</span>}
+                          {order.inAkcesoria && <span style={{ fontSize: '13px', color: '#388e3c' }} title="W akcesoriach">✅ akc.</span>}
+                          {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
                         </div>
                       </div>
                       <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -984,28 +999,54 @@ export default function App() {
                     <div className="card" style={{ borderLeft: '3px solid #ff9800' }}>
                       <div style={{ marginBottom: '1rem' }}>
                         <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🥪 Numer kanapki:</label>
-                        {getUserAccess(currentUser).wydane_manage ? (
-                          <input type="text" value={order.kanapka || ''} onChange={e => handleUpdateOrderField(order.id, 'kanapka', e.target.value)} placeholder="Wpisz numer kanapki..." style={{ width: '100%' }} />
+                        {canEditKanapka ? (
+                          <input type="text" value={order.kanapka || ''} onChange={e => { handleUpdateOrderField(order.id, 'kanapka', e.target.value); if (canManageW) handleUpdateOrderField(order.id, 'kanapkaSetByManage', true); }} placeholder="K lub R + numer..." style={{ width: '100%', fontSize: '16px', fontWeight: 'bold' }} />
                         ) : (
-                          <span>{order.kanapka || '—'}</span>
+                          <span style={{ fontSize: '16px', fontWeight: 'bold' }}>{order.kanapka || '—'}</span>
                         )}
                       </div>
-                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        {getUserAccess(currentUser).wydane_manage && (
-                          <button className="btn btn-success" onClick={() => handleAddToAkcesoria(order.id)} disabled={isLoading || !order.kanapka || order.inAkcesoria} style={{ flex: 1 }}>🧩 Dodaj do akcesoriów</button>
+
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📎 Załączniki:</label>
+                        {canManageW && (
+                          <>
+                            {!accessToken ? (
+                              <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ fontSize: '12px', width: '100%', marginBottom: '0.5rem' }}>🔐 Autoryzuj Google Drive</button>
+                            ) : (
+                              <button className="btn btn-primary" onClick={() => attachmentFileInputRef.current?.click()} disabled={isLoading} style={{ fontSize: '12px', marginBottom: '0.5rem' }}>📤 Dodaj plik</button>
+                            )}
+                            <input ref={attachmentFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, WYDANE_FOLDER_ID); e.target.value = ''; }} style={{ display: 'none' }} />
+                          </>
                         )}
-                        <button className="btn btn-danger" onClick={() => handleWyciete(order.id)} disabled={isLoading} style={{ flex: 1 }}>✂️ Wycięte</button>
+                        {(order.attachments || []).length === 0 && <p style={{ fontSize: '12px', color: '#999' }}>Brak załączników</p>}
+                        {(order.attachments || []).map((att, idx) => (
+                          <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', padding: '6px 10px', borderRadius: '4px', marginBottom: '4px', fontSize: '12px' }}>
+                            <a href={att.driveLink || '#'} target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>📄 {att.name}</a>
+                            {canManageW && <button className="btn btn-danger" onClick={() => handleDeleteAttachment(order.id, idx)} disabled={isLoading} style={{ padding: '2px 6px', fontSize: '10px' }}>✕</button>}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        {canManageW && (
+                          <button className="btn btn-success" onClick={() => handleAddToAkcesoria(order.id)} disabled={isLoading || order.inAkcesoria} style={{ flex: 1 }}>🧩 Dodaj do akcesoriów</button>
+                        )}
+                        <button className="btn btn-danger" onClick={() => handleWyciete(order.id)} disabled={isLoading || !order.kanapka} style={{ flex: 1 }}>✂️ Wycięte</button>
                       </div>
                     </div>
                   )}
                 </React.Fragment>
-              ))}
+                );
+              })}
             </div>
           )}
 
           {activeTab === 'akcesoria' && (
             <div>
               <h2>🧩 Akcesoria ({akcesoriaOrders.length})</h2>
+
+              {uploadMessage && <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>{uploadMessage}</div>}
+
               <div className="search-box">
                 <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
               </div>
@@ -1015,10 +1056,14 @@ export default function App() {
                   <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
-                        <h3 style={{ margin: '0 0 2px 0' }}>#{order.id} <span style={{ fontSize: '13px', color: '#666' }}>🥪 {order.kanapka}</span></h3>
-                        <div style={{ display: 'flex', gap: '8px', fontSize: '14px' }}>
-                          {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>✅ złożone</span>}
-                          {order.dołożone && <span style={{ background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>📦 dołożone</span>}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                          {order.kanapka && <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>🥪 {order.kanapka}</span>}
+                          {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', fontSize: '14px', marginTop: '2px' }}>
+                          {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }} title="Akcesoria złożone">✅ złożone</span>}
+                          {order.dołożone && <span style={{ background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }} title="Dołożone do palety">📦 dołożone</span>}
                         </div>
                       </div>
                       <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -1030,6 +1075,24 @@ export default function App() {
                         <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Braki / uwagi:</label>
                         <textarea value={order.akcesoriaUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'akcesoriaUwagi', e.target.value)} placeholder="Braki, uwagi..." style={{ width: '100%', height: '60px' }} />
                       </div>
+
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📎 Załączniki:</label>
+                        {!accessToken ? (
+                          <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ fontSize: '12px', width: '100%', marginBottom: '0.5rem' }}>🔐 Autoryzuj Google Drive</button>
+                        ) : (
+                          <button className="btn btn-primary" onClick={() => attachmentFileInputRef.current?.click()} disabled={isLoading} style={{ fontSize: '12px', marginBottom: '0.5rem' }}>📤 Dodaj plik</button>
+                        )}
+                        <input ref={attachmentFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, WYDANE_FOLDER_ID); e.target.value = ''; }} style={{ display: 'none' }} />
+                        {(order.attachments || []).length === 0 && <p style={{ fontSize: '12px', color: '#999' }}>Brak załączników</p>}
+                        {(order.attachments || []).map((att, idx) => (
+                          <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', padding: '6px 10px', borderRadius: '4px', marginBottom: '4px', fontSize: '12px' }}>
+                            <a href={att.driveLink || '#'} target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>📄 {att.name}</a>
+                            <button className="btn btn-danger" onClick={() => handleDeleteAttachment(order.id, idx)} disabled={isLoading} style={{ padding: '2px 6px', fontSize: '10px' }}>✕</button>
+                          </div>
+                        ))}
+                      </div>
+
                       <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem' }}>
                         <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                           <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading} /> Złożone
@@ -1178,9 +1241,9 @@ export default function App() {
                           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                             {order.transportDate && <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#333' }}>📅 {order.transportDate}</span>}
                             {order.dateConfirmed && <span style={{ fontSize: '13px', color: '#388e3c' }}>✅ potwierdzona</span>}
-                            {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }}>📎 {order.attachments.length}</span>}
-                            {order.złożone && <span style={{ fontSize: '13px', background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>🧩 złożone</span>}
-                            {order.dołożone && <span style={{ fontSize: '13px', background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>📦 dołożone</span>}
+                            {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
+                            {order.złożone && <span style={{ fontSize: '13px', background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }} title="Akcesoria złożone">🧩 złożone</span>}
+                            {order.dołożone && <span style={{ fontSize: '13px', background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }} title="Dołożone do palety">📦 dołożone</span>}
                           </div>
                         </div>
                         <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -1214,7 +1277,7 @@ export default function App() {
                         </div>
 
                         <div style={{ marginBottom: '1rem' }}>
-                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📎 Załączniki (list przewozowy, dokumenty):</label>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }} title="Załączniki">📎 Załączniki (list przewozowy, dokumenty):</label>
                           {!accessToken ? (
                             <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ fontSize: '12px', width: '100%' }}>🔐 Autoryzuj Google Drive (wymagane do załączników)</button>
                           ) : (
@@ -1375,7 +1438,7 @@ export default function App() {
                   <div style={{ fontSize: '12px', color: '#666', marginBottom: '0.75rem' }}>
                     {order.transportDate && <span style={{ marginRight: '12px' }}>📅 {order.transportDate}</span>}
                     {order.uwagi && <span style={{ marginRight: '12px' }}>💬 {order.uwagi}</span>}
-                    {order.attachments?.length > 0 && <span style={{ marginRight: '12px' }}>📎 {order.attachments.length} plik(ów)</span>}
+                    {order.attachments?.length > 0 && <span style={{ marginRight: '12px' }} title="Załączniki">📎 {order.attachments.length} plik(ów)</span>}
                     {order.photoCount > 0 && <span>📸 {order.photoCount} zdjęć</span>}
                   </div>
                   {order.notatki && <p style={{ fontSize: '12px', color: '#555', margin: '0 0 8px 0', fontStyle: 'italic' }}>📝 {order.notatki}</p>}
@@ -1451,12 +1514,12 @@ export default function App() {
                             <h3 style={{ margin: 0 }}>#{order.id}</h3>
                             {order.transportDate && <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>📅 {order.transportDate}</span>}
                             {!isRaben && order.paleta && <span style={{ fontSize: '15px', background: '#e1bee7', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>P{order.paleta}</span>}
-                            {order.spakowane && <span style={{ fontSize: '15px', background: '#fff3cd', padding: '2px 8px', borderRadius: '4px' }}>📦</span>}
-                            {order.wyslane && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }}>🚚</span>}
-                            {order.dostarczone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }}>✅</span>}
-                            {order.attachments?.length > 0 && <span style={{ fontSize: '15px', color: '#666' }}>📎 {order.attachments.length}</span>}
-                            {order.złożone && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }}>🧩</span>}
-                            {order.dołożone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }}>📦dł</span>}
+                            {order.spakowane && <span style={{ fontSize: '15px', background: '#fff3cd', padding: '2px 8px', borderRadius: '4px' }} title="Spakowane">📦</span>}
+                            {order.wyslane && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }} title="Wysłane">🚚</span>}
+                            {order.dostarczone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }} title="Dostarczone">✅</span>}
+                            {order.attachments?.length > 0 && <span style={{ fontSize: '15px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
+                            {order.złożone && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }} title="Akcesoria złożone">🧩</span>}
+                            {order.dołożone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }} title="Dołożone do palety">📦dł</span>}
                           </div>
                           {order.uwagi && <p style={{ fontSize: '13px', color: '#1976d2', margin: '4px 0 0 0' }}>💬 {order.uwagi}</p>}
                         </div>
@@ -1526,7 +1589,7 @@ export default function App() {
                         </div>
 
                         <div style={{ marginBottom: '1rem' }}>
-                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📎 Załączniki:</label>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }} title="Załączniki">📎 Załączniki:</label>
                           {canManage && (
                             <>
                               {!accessToken ? (
