@@ -1056,7 +1056,9 @@ export default function App() {
         await updateDoc(orderRef, {
           csvData: allCsvData, csvLoaded: true, totalFormats, hasNoDrilling, colorCountExclHdf, longestElement,
           ...(autoPaleta ? { paletaPrestashop: autoPaleta } : {}),
-          history: [...(order.history || []), historyEntry(`Pobrano ${allCsvData.length} plików CSV (${totalFormats} formatek)${autoPaleta ? ` | Auto-paleta: ${autoPaleta}` : ''}`)]\n        });\n        setUploadMessage(`✅ Pobrano ${allCsvData.length} kolorów, ${totalFormats} formatek${autoPaleta ? ` | Paleta auto: ${autoPaleta}` : ''}`);
+          history: [...(order.history || []), historyEntry(`Pobrano ${allCsvData.length} plików CSV (${totalFormats} formatek)${autoPaleta ? ` | Auto-paleta: ${autoPaleta}` : ''}`)]
+        });
+        setUploadMessage(`✅ Pobrano ${allCsvData.length} kolorów, ${totalFormats} formatek${autoPaleta ? ` | Paleta auto: ${autoPaleta}` : ''}`);
       }
     } catch (err) {
       setUploadMessage(`❌ Błąd: ${err.message}`);
