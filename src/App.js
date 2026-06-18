@@ -23,6 +23,9 @@ const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 
 const ACCESS_FOLDERS = [
+  { key: 'wydane_na_produkcje', label: 'Wydane na produkcję - PS (widok)' },
+  { key: 'wydane_na_produkcje_manage', label: 'Wydane na produkcję - PS (zarządzanie)' },
+  { key: 'planowanie', label: 'Planowanie produkcji' },
   { key: 'wydane', label: 'Wydane na produkcję (widok)' },
   { key: 'wydane_manage', label: 'Wydane na produkcję (zarządzanie)' },
   { key: 'akcesoria', label: 'Akcesoria' },
@@ -198,7 +201,7 @@ export default function App() {
       setAppState('dashboard');
       // Reset to first available tab for THIS user
       const a = getUserAccess(user);
-      const firstTab = (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.prestashop || a.prestashop_manage) ? 'prestashop' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.trudny_klient ? 'trudny_klient' : a.admin ? 'admin' : 'orders';
+      const firstTab = (a.prestashop || a.prestashop_manage || a.prestashop_poprawione) ? 'prestashop' : (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.trudny_klient ? 'trudny_klient' : a.admin ? 'admin' : 'orders';
       setActiveTab(firstTab);
     } else {
       alert('Błędne dane logowania');
@@ -648,6 +651,7 @@ export default function App() {
 
   const ATTACHMENTS_FOLDER_ID = '1EtAmIu6Cr8f3jD9JQC3G3nNE0M3Gf_bD';
   const WYDANE_FOLDER_ID = '1tpZdY9yDGnbXUD-5e4ev_Sk962Z4MnMf';
+  const PRODUKCJA_FOLDER_ID = '1r3zjtvSfPa36a1q_GG9giDaNtmtPCvew';
   const CSV_DRIVE_FOLDER_ID = '0ALO7nCAWeZ9QUk9PVA';
 
   const handleUploadAttachment = async (orderId, file, targetFolderId) => {
@@ -1034,15 +1038,94 @@ export default function App() {
           color.surfaceArea = Math.round(area * 1000) / 1000;
           color.edgeMeters = Math.round(edgeMeters * 100) / 100;
         }
+        // Auto-set palette based on transport type (only if not already set)
+        let autoPaleta = null;
+        if (!order.paletaPrestashop) {
+          const transport = (order.prestashopData?.transport || '').toLowerCase();
+          if (transport.includes('dedykowana')) {
+            autoPaleta = 'NASZA';
+          } else if (transport.includes('paletowa') || transport.includes('paletowy')) {
+            // Paleta longer by min 40mm than longest element, from series 1200..2800
+            const PALETA_SERIES = [1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800];
+            const minLen = longestElement + 40;
+            const suggested = PALETA_SERIES.find(p => p >= minLen);
+            autoPaleta = suggested ? String(suggested) : '2800';
+          }
+        }
+
         await updateDoc(orderRef, {
           csvData: allCsvData, csvLoaded: true, totalFormats, hasNoDrilling, colorCountExclHdf, longestElement,
-          history: [...(order.history || []), historyEntry(`Pobrano ${allCsvData.length} plików CSV (${totalFormats} formatek)`)]
-        });
-        setUploadMessage(`✅ Pobrano ${allCsvData.length} kolorów, ${totalFormats} formatek`);
+          ...(autoPaleta ? { paletaPrestashop: autoPaleta } : {}),
+          history: [...(order.history || []), historyEntry(`Pobrano ${allCsvData.length} plików CSV (${totalFormats} formatek)${autoPaleta ? ` | Auto-paleta: ${autoPaleta}` : ''}`)]\n        });\n        setUploadMessage(`✅ Pobrano ${allCsvData.length} kolorów, ${totalFormats} formatek${autoPaleta ? ` | Paleta auto: ${autoPaleta}` : ''}`);
       }
     } catch (err) {
       setUploadMessage(`❌ Błąd: ${err.message}`);
     } finally { setIsLoading(false); }
+  };
+
+  const handleFetchAccessoryLinks = async (orderId) => {
+    if (!accessToken) { alert('Najpierw autoryzuj Google Drive'); return; }
+    try {
+      setIsLoading(true);
+      setUploadMessage(`⏳ Szukam plików dla #${orderId}...`);
+
+      // Find order subfolder in CSV drive
+      const searchResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q='${CSV_DRIVE_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and name contains '${orderId}' and trashed=false&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=10`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const folders = await searchResp.json();
+
+      if (!folders.files || folders.files.length === 0) {
+        setUploadMessage(`❌ Nie znaleziono folderu dla #${orderId}`);
+        return;
+      }
+
+      let okucLink = null, ciecieLink = null, aFile = null, bFile = null;
+
+      for (const folder of folders.files) {
+        const filesResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q='${folder.id}' in parents and trashed=false&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100&fields=files(id,name,webViewLink)`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const filesData = await filesResp.json();
+        if (!filesData.files) continue;
+
+        for (const f of filesData.files) {
+          if (f.name === 'PL-01_Raport_okuc_skrocony.pdf') okucLink = f.webViewLink;
+          if (f.name === 'PL_Ciecie_dluzycy.pdf') ciecieLink = f.webViewLink;
+          if (f.name === `A_${orderId}` || f.name === `A_${orderId}.pdf`) aFile = f.webViewLink;
+          if (f.name === `B_${orderId}` || f.name === `B_${orderId}.pdf`) bFile = f.webViewLink;
+        }
+      }
+
+      const order = orders.find(o => o.id === orderId);
+      const hasNoAcc = !okucLink && !ciecieLink;
+
+      if (hasNoAcc) {
+        // Ask user: confirm no accessories
+        const userChoice = window.confirm(
+          'Czy jesteś pewny, że w zamówieniu nie ma akcesoriów?\n\nOK = Brak akcesoriów\nAnuluj = Są akcesoria – uzupełnię katalog CSV i ponowię próbę'
+        );
+        if (!userChoice) {
+          setUploadMessage('⚠️ Uzupełnij katalog CSV i ponów pobieranie linków.');
+          return;
+        }
+      }
+
+      if (order) {
+        const orderRef = doc(db, 'orders', order.docId);
+        await updateDoc(orderRef, {
+          accessoryLinks: { okucLink, ciecieLink, aFile, bFile },
+          history: [...(order.history || []), historyEntry(`Pobrano linki do plików (akcesoria: ${hasNoAcc ? 'brak' : 'tak'})`)]
+        });
+        setUploadMessage(`✅ Linki pobrane${hasNoAcc ? ' — brak akcesoriów' : ''}`);
+      }
+    } catch (err) {
+      setUploadMessage(`❌ Błąd: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const canMoveToProduction = (order) => {
@@ -1055,7 +1138,27 @@ export default function App() {
     if (order.bledy && !order.poprawione) return false;
     if (order.bledy && !order.sprawdzoneBledy) return false;
     if (order.dekoryNeedCheck) return false;
+    // BLOKADA: kolory muszą być sprawdzone (colorChecked = true)
+    if (!order.colorChecked) return false;
     return true;
+  };
+
+  const canMoveToProductionReasons = (order) => {
+    const reasons = [];
+    if (!order.prestashopData) return ['brak danych Prestashop'];
+    const d = order.prestashopData;
+    if (!d.dataRealizacji) reasons.push('data realizacji');
+    if (!d.transport) reasons.push('transport');
+    if (!d.wartosc) reasons.push('wartość');
+    if (!d.kodPocztowy) reasons.push('kod pocztowy');
+    if (!order.paletaPrestashop) reasons.push('paleta');
+    if (!order.csvLoaded) reasons.push('CSV');
+    if (!order.sprawdzone) reasons.push('sprawdzone');
+    if (order.bledy && !order.poprawione) reasons.push('poprawione');
+    if (order.bledy && !order.sprawdzoneBledy) reasons.push('sprawdzone błędy');
+    if (order.dekoryNeedCheck) reasons.push('dekory');
+    if (!order.colorChecked) reasons.push('🎨 KOLORY NIE SPRAWDZONE');
+    return reasons;
   };
 
   const parseDekoryFromExcel = (raw) => {
@@ -1156,13 +1259,38 @@ export default function App() {
   };
 
   const handleMoveToProduction = async (orderId) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    // Final gate check
+    if (!canMoveToProduction(order)) {
+      const missing = canMoveToProductionReasons(order);
+      alert(`❌ Nie można wydać na produkcję.\nBrakuje: ${missing.join(', ')}`);
+      return;
+    }
+
     if (!window.confirm(`Przenieść zamówienie #${orderId} na produkcję?`)) return;
+
     try {
-      const order = orders.find(o => o.id === orderId);
-      if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { movedToProduction: true, history: [...(order.history || []), historyEntry('Przeniesione na produkcję')] });
-    } catch (err) { alert('Błąd: ' + err.message); }
+      const updates = {
+        movedToProduction: true,
+        wydaneNaProdukcje: true,
+        wydaneNaProdukcjeAt: new Date().toISOString(),
+        wydaneNaProdukcjeBy: currentUser?.name || currentUser?.email || '?',
+        history: [...(order.history || []), historyEntry('Wydano na produkcję (Prestashop)')]
+      };
+
+      // Auto-add to akcesoria if not brakAkcesoriow
+      if (!order.brakAkcesoriow && !order.inAkcesoria) {
+        updates.inAkcesoria = true;
+      }
+
+      await updateDoc(orderRef, updates);
+      alert(`✅ Zamówienie #${orderId} wydane na produkcję`);
+    } catch (err) {
+      alert('Błąd: ' + err.message);
+    }
   };
 
   const handleTransferOrder = (orderId, fromStatus) => {
@@ -1227,6 +1355,14 @@ export default function App() {
   const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
   const trudnyKlientOrders = orders.filter(o => o.trudnyKlient && !o.trudnyKlientArchived).sort(sortByNum);
   const prestashopSorted = orders.filter(o => o.inPrestashop && !o.movedToProduction);
+  const wydaneNaProdukcjeOrders = orders.filter(o => o.wydaneNaProdukcje).sort(sortByKanapka);
+  const planowanieOrders = orders.filter(o => o.wydaneNaProdukcje).sort((a, b) => {
+    // Niespakowane na górze, spakowane na dole
+    const aSpak = (a.spakowane || false) ? 1 : 0;
+    const bSpak = (b.spakowane || false) ? 1 : 0;
+    if (aSpak !== bSpak) return aSpak - bSpak;
+    return sortByKanapka(a, b);
+  });
   const prestashopOrders = psSortBy === 'date' ? prestashopSorted.sort((a,b) => (a.prestashopData?.dataRealizacji||'9999').localeCompare(b.prestashopData?.dataRealizacji||'9999'))
     : psSortBy === 'value' ? prestashopSorted.sort((a,b) => parseFloat((a.prestashopData?.wartosc||'0').replace(',','.')) - parseFloat((b.prestashopData?.wartosc||'0').replace(',','.')))
     : psSortBy === 'colors' ? prestashopSorted.sort((a,b) => (b.colorCountExclHdf||0) - (a.colorCountExclHdf||0))
@@ -1238,9 +1374,11 @@ export default function App() {
     if (!currentUser) return [];
     const a = getUserAccess(currentUser);
     const tabs = [];
+    if (a.prestashop || a.prestashop_manage || a.prestashop_poprawione) tabs.push('prestashop');
+    if (a.wydane_na_produkcje || a.wydane_na_produkcje_manage) tabs.push('wydane_na_produkcje');
+    if (a.planowanie) tabs.push('planowanie');
     if (a.wydane || a.wydane_manage) tabs.push('wydane');
     if (a.akcesoria) tabs.push('akcesoria');
-    if (a.prestashop || a.prestashop_manage || a.prestashop_poprawione) tabs.push('prestashop');
     if (a.orders || a.orders_manage) tabs.push('orders');
     if (a.ready) tabs.push('ready');
     if (a.pallet) tabs.push('pallet');
@@ -1308,9 +1446,11 @@ export default function App() {
           </div>
 
           <div className="tabs">
+            {visibleTabs.includes('prestashop') && <button className={`tab-btn ${activeTab === 'prestashop' ? 'active' : ''}`} onClick={() => { setActiveTab('prestashop'); setSearchQuery(''); }}>🛒 Prestashop</button>}
+            {visibleTabs.includes('wydane_na_produkcje') && <button className={`tab-btn ${activeTab === 'wydane_na_produkcje' ? 'active' : ''}`} onClick={() => { setActiveTab('wydane_na_produkcje'); setSearchQuery(''); }}>🏭 Wydane PS</button>}
+            {visibleTabs.includes('planowanie') && <button className={`tab-btn ${activeTab === 'planowanie' ? 'active' : ''}`} onClick={() => { setActiveTab('planowanie'); setSearchQuery(''); }}>📅 Planowanie</button>}
             {visibleTabs.includes('wydane') && <button className={`tab-btn ${activeTab === 'wydane' ? 'active' : ''}`} onClick={() => { setActiveTab('wydane'); setSearchQuery(''); }}>🔧 Wydane</button>}
             {visibleTabs.includes('akcesoria') && <button className={`tab-btn ${activeTab === 'akcesoria' ? 'active' : ''}`} onClick={() => { setActiveTab('akcesoria'); setSearchQuery(''); }}>🧩 Akcesoria</button>}
-            {visibleTabs.includes('prestashop') && <button className={`tab-btn ${activeTab === 'prestashop' ? 'active' : ''}`} onClick={() => { setActiveTab('prestashop'); setSearchQuery(''); }}>🛒 Prestashop</button>}
             {visibleTabs.includes('orders') && <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => { setActiveTab('orders'); setSearchQuery(''); }}>📦 Zamówienia</button>}
             {visibleTabs.includes('ready') && <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => { setActiveTab('ready'); setSearchQuery(''); }}>📋 Gotowe</button>}
             {visibleTabs.includes('pallet') && <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => { setActiveTab('pallet'); setSearchQuery(''); }}>🎨 Paletowy</button>}
@@ -1324,6 +1464,156 @@ export default function App() {
             {visibleTabs.includes('trudny_klient') && <button className={`tab-btn ${activeTab === 'trudny_klient' ? 'active' : ''}`} style={activeTab === 'trudny_klient' ? {background:'#f44336',borderColor:'#f44336',color:'white'} : {borderColor:'#f44336',color:'#f44336'}} onClick={() => { setActiveTab('trudny_klient'); setSearchQuery(''); }}>⚠️ Trudny klient</button>}
             {visibleTabs.includes('admin') && <button className={`tab-btn ${activeTab === 'admin' ? 'active' : ''}`} onClick={() => { setActiveTab('admin'); setSearchQuery(''); }}>⚙️ Admin</button>}
           </div>
+
+          </div>
+
+          {/* ===== WYDANE NA PRODUKCJĘ (z Prestashop) ===== */}
+          {activeTab === 'wydane_na_produkcje' && (() => {
+            const canManage = getUserAccess(currentUser).wydane_na_produkcje_manage;
+            const filtered = wydaneNaProdukcjeOrders.filter(o => !searchQuery || o.id.includes(searchQuery));
+            return (
+              <div>
+                <h2>🏭 Wydane na produkcję ({filtered.length})</h2>
+                <div className="search-box">
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+                </div>
+                {filtered.map(order => {
+                  const ps = order.prestashopData || {};
+                  return (
+                    <React.Fragment key={order.docId}>
+                      <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                          {ps.dataRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold' }}>📅 {ps.dataRealizacji}</span>}
+                          {order.kanapka && <span style={{ fontSize: '13px', background: '#fff9c4', padding: '2px 6px', borderRadius: '4px' }}>🥪 {order.kanapka}</span>}
+                          {order.paletaPrestashop && <span style={{ fontSize: '12px', background: '#e3f2fd', padding: '2px 6px', borderRadius: '4px' }}>🎨 {order.paletaPrestashop}</span>}
+                          {ps.transport && <span style={{ fontSize: '11px', color: '#666' }}>{ps.transport.substring(0, 35)}{ps.transport.length > 35 ? '...' : ''}</span>}
+                          {order.wydaneNaProdukcjeBy && <span style={{ fontSize: '11px', color: '#999' }}>by {order.wydaneNaProdukcjeBy}</span>}
+                          {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
+                        </div>
+                      </div>
+                      {selectedOrderId === order.id && (
+                        <div className="card" style={{ borderLeft: '3px solid #4caf50' }}>
+                          <div style={{ fontSize: '13px', marginBottom: '8px' }}>
+                            <strong>Wydano:</strong> {order.wydaneNaProdukcjeAt ? new Date(order.wydaneNaProdukcjeAt).toLocaleString('pl-PL') : '—'}
+                            {' '}przez <strong>{order.wydaneNaProdukcjeBy || '?'}</strong>
+                          </div>
+                          <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Transport:</strong> {ps.transport || '—'}</div>
+                          <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
+                          <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Paleta:</strong> {order.paletaPrestashop || '—'}</div>
+
+                          {/* Linki do akcesoriów */}
+                          {order.accessoryLinks && (
+                            <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Akcesoria:</div>
+                              {order.accessoryLinks.okucLink ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a> : null}
+                              {order.accessoryLinks.ciecieLink ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a> : null}
+                              {!order.accessoryLinks.okucLink && !order.accessoryLinks.ciecieLink && <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>}
+                              {order.accessoryLinks.aFile ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 A_{order.id}</a> : null}
+                              {order.accessoryLinks.bFile ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 B_{order.id}</a> : null}
+                            </div>
+                          )}
+
+                          {/* Upload do folderu produkcji */}
+                          {canManage && (
+                            <div style={{ marginBottom: '8px' }}>
+                              <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📤 Dodaj plik produkcyjny:</label>
+                              <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, PRODUKCJA_FOLDER_ID); e.target.value = ''; }} style={{ fontSize: '12px' }} />
+                            </div>
+                          )}
+
+                          {/* Historia */}
+                          {order.history && order.history.length > 0 && (
+                            <details style={{ marginTop: '8px' }}>
+                              <summary style={{ fontSize: '12px', cursor: 'pointer' }}>📋 Historia</summary>
+                              <div style={{ maxHeight: '150px', overflow: 'auto', marginTop: '4px' }}>
+                                {[...order.history].reverse().map((h, i) => (
+                                  <div key={i} style={{ fontSize: '11px', padding: '2px 0', borderBottom: '1px solid #eee' }}>
+                                    {new Date(h.timestamp).toLocaleString('pl-PL')} — <strong>{h.user}</strong>: {h.action}
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {/* ===== PLANOWANIE PRODUKCJI ===== */}
+          {activeTab === 'planowanie' && (() => {
+            const canManage = getUserAccess(currentUser).planowanie;
+            const filtered = planowanieOrders.filter(o => !searchQuery || o.id.includes(searchQuery));
+            return (
+              <div>
+                <h2>📅 Planowanie produkcji ({filtered.length})</h2>
+                <div className="search-box">
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+                </div>
+                <p style={{ fontSize: '12px', color: '#666' }}>Sortowanie: niespakowane na górze · spakowane na dole · wg kanapki</p>
+                {filtered.map(order => {
+                  const ps = order.prestashopData || {};
+                  return (
+                    <React.Fragment key={order.docId}>
+                      <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`}
+                           style={{ opacity: order.spakowane ? 0.55 : 1, borderLeft: order.spakowane ? '3px solid #aaa' : '3px solid #2196F3' }}
+                           onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                          {ps.dataRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold' }}>📅 {ps.dataRealizacji}</span>}
+                          {order.kanapka && <span style={{ fontSize: '13px', background: '#fff9c4', padding: '2px 6px', borderRadius: '4px' }}>🥪 {order.kanapka}</span>}
+                          {order.paletaPrestashop && <span style={{ fontSize: '12px', background: '#e3f2fd', padding: '2px 6px', borderRadius: '4px' }}>🎨 {order.paletaPrestashop}</span>}
+                          {order.spakowane && <span style={{ fontSize: '12px', background: '#e0e0e0', padding: '2px 6px', borderRadius: '4px' }}>📦 spakowane</span>}
+                          {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
+                        </div>
+                      </div>
+                      {selectedOrderId === order.id && (
+                        <div className="card" style={{ borderLeft: '3px solid #2196F3' }}>
+                          <div style={{ fontSize: '13px', marginBottom: '6px' }}><strong>Transport:</strong> {ps.transport || '—'}</div>
+                          <div style={{ fontSize: '13px', marginBottom: '6px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
+                          <div style={{ fontSize: '13px', marginBottom: '6px' }}><strong>Paleta:</strong> {order.paletaPrestashop || '—'}</div>
+
+                          {/* Kanapka w planowaniu */}
+                          {canManage && (
+                            <div style={{ marginBottom: '8px' }}>
+                              <label style={{ fontSize: '12px', fontWeight: 'bold' }}>🥪 Numer kanapki:</label>
+                              <input type="text" defaultValue={order.kanapka || ''} placeholder="K123 lub R45"
+                                onBlur={e => { if (e.target.value !== (order.kanapka || '')) handleUpdateOrderField(order.id, 'kanapka', e.target.value); }}
+                                style={{ width: '100%', padding: '4px', marginTop: '2px' }} />
+                            </div>
+                          )}
+
+                          {/* Akcesoria */}
+                          {order.accessoryLinks && (
+                            <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Akcesoria:</div>
+                              {order.accessoryLinks.okucLink ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a> : null}
+                              {order.accessoryLinks.ciecieLink ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a> : null}
+                              {!order.accessoryLinks.okucLink && !order.accessoryLinks.ciecieLink && <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>}
+                              {order.accessoryLinks.aFile ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 A_{order.id}</a> : null}
+                              {order.accessoryLinks.bFile ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 B_{order.id}</a> : null}
+                            </div>
+                          )}
+
+                          {/* Upload produkcyjny */}
+                          {canManage && (
+                            <div style={{ marginBottom: '8px' }}>
+                              <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📤 Dodaj plik:</label>
+                              <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, PRODUKCJA_FOLDER_ID); e.target.value = ''; }} style={{ fontSize: '12px' }} />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           {activeTab === 'wydane' && (
             <div>
@@ -1451,20 +1741,27 @@ export default function App() {
                 <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
               </div>
               {akcesoriaOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {akcesoriaOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
+              {akcesoriaOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
+                const ps = order.prestashopData || {};
+                return (
                 <React.Fragment key={order.docId}>
                   <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                           <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                          {order.kanapka && <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>🥪 {order.kanapka}</span>}
-                          {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
+                          {ps.dataRealizacji && <span style={{ fontSize: '13px', fontWeight: 'bold' }}>📅 {ps.dataRealizacji}</span>}
+                          {order.kanapka && <span style={{ fontSize: '13px', background: '#fff9c4', padding: '1px 5px', borderRadius: '4px' }}>🥪 {order.kanapka}</span>}
+                          {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }}>📎 {order.attachments.length}</span>}
+                          {order.accessoryLinks?.okucLink && <span style={{ fontSize: '12px', color: '#7b1fa2' }}>📄</span>}
                         </div>
-                        <div style={{ display: 'flex', gap: '8px', fontSize: '14px', marginTop: '2px' }}>
-                          {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }} title="Akcesoria złożone">✅ złożone</span>}
-                          {order.dołożone && <span style={{ background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }} title="Dołożone do palety">📦 dołożone</span>}
-                          {order.brakAkcesoriow && <span style={{ fontSize: '13px', background: '#ffebee', color: '#c62828', padding: '2px 6px', borderRadius: '4px' }} title="Brak akcesoriów">❌ brak</span>}
+                        <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
+                          {ps.transport && <span>{ps.transport.substring(0, 45)}{ps.transport.length > 45 ? '...' : ''}</span>}
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', fontSize: '13px', marginTop: '2px' }}>
+                          {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>✅ złożone</span>}
+                          {order.dołożone && <span style={{ background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>📦 dołożone</span>}
+                          {order.brakAkcesoriow && <span style={{ background: '#ffebee', color: '#c62828', padding: '1px 6px', borderRadius: '4px' }}>❌ brak akces.</span>}
                           {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
                         </div>
                       </div>
@@ -1473,6 +1770,25 @@ export default function App() {
                   </div>
                   {selectedOrderId === order.id && (
                     <div className="card" style={{ borderLeft: '3px solid #9c27b0' }}>
+
+                      {/* Linki do akcesoriów PDF */}
+                      {order.accessoryLinks && (
+                        <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '1rem' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Pliki akcesoriów:</div>
+                          {order.accessoryLinks.okucLink
+                            ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a>
+                            : null}
+                          {order.accessoryLinks.ciecieLink
+                            ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a>
+                            : null}
+                          {!order.accessoryLinks.okucLink && !order.accessoryLinks.ciecieLink
+                            ? <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>
+                            : null}
+                          {order.accessoryLinks.aFile ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 A_{order.id}</a> : null}
+                          {order.accessoryLinks.bFile ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 B_{order.id}</a> : null}
+                        </div>
+                      )}
+
                       <div style={{ marginBottom: '1rem' }}>
                         <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Braki / uwagi:</label>
                         <textarea value={order.akcesoriaUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'akcesoriaUwagi', e.target.value)} placeholder="Braki, uwagi..." style={{ width: '100%', height: '60px' }} />
@@ -1483,7 +1799,7 @@ export default function App() {
                         {!accessToken ? (
                           <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ fontSize: '12px', width: '100%', marginBottom: '0.5rem' }}>🔐 Autoryzuj Google Drive</button>
                         ) : (
-                          <button className="btn btn-primary" onClick={() => attachmentFileInputRef.current?.click()} disabled={isLoading} style={{ fontSize: '12px', marginBottom: '0.5rem' }}>📤 Dodaj plik</button>
+                          <button className="btn btn-primary" onClick={() => attachmentFileInputRef.current?.click()} disabled={isLoading} style={{ fontSize: '12px', marginBottom: '0.5rem' }}>📤 Dodaj plik (akcesoria)</button>
                         )}
                         <input ref={attachmentFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, WYDANE_FOLDER_ID); e.target.value = ''; }} style={{ display: 'none' }} />
                         {(order.attachments || []).length === 0 && <p style={{ fontSize: '12px', color: '#999' }}>Brak załączników</p>}
@@ -1500,19 +1816,19 @@ export default function App() {
                           <input type="checkbox" checked={order.brakAkcesoriow || false} onChange={() => handleToggleAkcesoria(order.id, 'brakAkcesoriow')} disabled={isLoading} /> ❌ Brak akcesoriów
                         </label>
                         <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.brakAkcesoriow ? 0.4 : 1 }}>
-                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading || order.brakAkcesoriow} /> Złożone
+                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading || order.brakAkcesoriow} /> Przygotowane
                         </label>
                         <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.brakAkcesoriow ? 0.4 : 1 }}>
                           <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading || order.brakAkcesoriow} /> Dołożone do palety
                         </label>
                       </div>
                       {((order.złożone && order.dołożone) || order.brakAkcesoriow) && (
-                        <button className="btn btn-success" onClick={() => handleMoveToArchive3(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Przenieś do archiwum</button>
+                        <button className="btn btn-success" onClick={() => handleMoveToArchive3(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Archiwum akcesoriów</button>
                       )}
                     </div>
                   )}
                 </React.Fragment>
-              ))}
+              );})}
             </div>
           )}
 
@@ -1695,6 +2011,50 @@ export default function App() {
                             <textarea value={order.prestashopUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'prestashopUwagi', e.target.value)} placeholder="Uwagi..." style={{ width: '100%', height: '50px' }} />
                           </div>
 
+                          {/* 🎨 SPRAWDZENIE KOLORÓW */}
+                          <div style={{ background: order.colorChecked ? '#e8f5e9' : '#fff3e0', border: `2px solid ${order.colorChecked ? '#4caf50' : '#ff9800'}`, borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ fontSize: '14px', fontWeight: 'bold' }}>{order.colorChecked ? '✅ Kolory sprawdzone' : '⚠️ KOLORY NIE SPRAWDZONE'}</span>
+                              {canManagePS && (
+                                <button className="btn" onClick={() => handleUpdateOrderField(order.id, 'colorChecked', !order.colorChecked)} style={{ fontSize: '11px', padding: '2px 8px', borderColor: order.colorChecked ? '#f44336' : '#4caf50', color: order.colorChecked ? '#f44336' : '#4caf50' }}>
+                                  {order.colorChecked ? 'Cofnij' : '✓ Oznacz sprawdzone'}
+                                </button>
+                              )}
+                            </div>
+                            {!order.colorChecked && <p style={{ fontSize: '11px', color: '#e65100', margin: '4px 0 0' }}>Sprawdź kolory z CSV vs dekorami — wymagane przed produkcją.</p>}
+                          </div>
+
+                          {/* 📎 LINKI DO AKCESORIÓW */}
+                          <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📎 Pliki akcesoriów i produkcyjne:</div>
+                            {order.accessoryLinks ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                {order.accessoryLinks.okucLink
+                                  ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a>
+                                  : null}
+                                {order.accessoryLinks.ciecieLink
+                                  ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a>
+                                  : null}
+                                {!order.accessoryLinks.okucLink && !order.accessoryLinks.ciecieLink && (
+                                  <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>
+                                )}
+                                {order.accessoryLinks.aFile
+                                  ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#4a148c' }}>📁 A_{order.id}</a>
+                                  : null}
+                                {order.accessoryLinks.bFile
+                                  ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#4a148c' }}>📁 B_{order.id}</a>
+                                  : null}
+                                {canManagePS && (
+                                  <button className="btn" onClick={() => handleFetchAccessoryLinks(order.id)} disabled={isLoading} style={{ fontSize: '10px', padding: '2px 6px', marginTop: '4px' }}>🔄 Odśwież linki</button>
+                                )}
+                              </div>
+                            ) : (
+                              canManagePS
+                                ? <button className="btn btn-primary" onClick={() => handleFetchAccessoryLinks(order.id)} disabled={isLoading} style={{ fontSize: '12px' }}>🔍 Pobierz linki do plików</button>
+                                : <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>
+                            )}
+                          </div>
+
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                             {canManagePS && !order.csvLoaded && (
                               <button className="btn btn-primary" onClick={() => handleLoadCsv(order.id)} disabled={isLoading} style={{ flex: 1 }}>📄 Pobierz CSV z Drive</button>
@@ -1709,7 +2069,11 @@ export default function App() {
                               <button className="btn btn-danger" onClick={() => handleDeletePrestashop(order.id)} disabled={isLoading} style={{ padding: '8px 12px' }}>🗑️</button>
                             )}
                           </div>
-                          {!canMoveToProduction(order) && <p style={{ fontSize: '11px', color: '#999', marginTop: '4px' }}>Wymagane: data, transport, wartość, kod pocztowy, paleta, CSV, sprawdzone{order.bledy ? ', poprawione, sprawdzone błędy' : ''}{order.dekoryNeedCheck ? ', dekory' : ''}</p>}
+                          {!canMoveToProduction(order) && (
+                            <div style={{ fontSize: '11px', color: '#c62828', background: '#ffebee', padding: '6px 8px', borderRadius: '4px', marginTop: '4px' }}>
+                              ⛔ Brakuje: {canMoveToProductionReasons(order).join(' • ')}
+                            </div>
+                          )}
                         </div>
                       )}
                     </React.Fragment>
@@ -2090,13 +2454,43 @@ export default function App() {
                 <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
               </div>
               {archive3Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {archive3Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
-                <div key={order.docId} className="card">
-                  <h3 style={{ margin: '0 0 4px 0' }}>#{order.id} <span style={{ fontSize: '13px', color: '#666' }}>🥪 {order.kanapka}</span></h3>
-                  {order.akcesoriaUwagi && <p style={{ fontSize: '12px', color: '#555', margin: '0 0 4px 0' }}>📝 {order.akcesoriaUwagi}</p>}
-                  <div style={{ fontSize: '12px', color: '#388e3c' }}>✅ złożone ✅ dołożone</div>
-                </div>
-              ))}
+              {archive3Orders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
+                const ps = order.prestashopData || {};
+                const akcesoriaHistory = (order.history || []).filter(h =>
+                  h.action && (h.action.toLowerCase().includes('akces') || h.action.toLowerCase().includes('złożon') || h.action.toLowerCase().includes('dołożon') || h.action.toLowerCase().includes('brak akc'))
+                );
+                return (
+                  <div key={order.docId} className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <h3 style={{ margin: '0 0 4px 0' }}>#{order.id} {order.kanapka && <span style={{ fontSize: '13px', color: '#666' }}>🥪 {order.kanapka}</span>}</h3>
+                        {ps.dataRealizacji && <div style={{ fontSize: '12px', color: '#666' }}>📅 {ps.dataRealizacji}</div>}
+                        {order.akcesoriaUwagi && <p style={{ fontSize: '12px', color: '#555', margin: '4px 0' }}>📝 {order.akcesoriaUwagi}</p>}
+                        <div style={{ fontSize: '12px', color: '#388e3c', marginTop: '4px' }}>
+                          {order.brakAkcesoriow ? '❌ Brak akcesoriów' : '✅ złożone · 📦 dołożone'}
+                        </div>
+                      </div>
+                    </div>
+                    {akcesoriaHistory.length > 0 && (
+                      <div style={{ marginTop: '8px', borderTop: '1px solid #eee', paddingTop: '6px' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>📋 Historia akcesoriów:</div>
+                        {akcesoriaHistory.map((h, i) => (
+                          <div key={i} style={{ fontSize: '11px', color: '#555', padding: '2px 0' }}>
+                            {new Date(h.timestamp).toLocaleString('pl-PL')} — <strong>{h.user}</strong>: {h.action}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Linki do akcesoriów */}
+                    {order.accessoryLinks && (order.accessoryLinks.okucLink || order.accessoryLinks.ciecieLink) && (
+                      <div style={{ marginTop: '6px', fontSize: '12px' }}>
+                        {order.accessoryLinks.okucLink && <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ color: '#7b1fa2', marginRight: '8px' }}>📄 Okuc</a>}
+                        {order.accessoryLinks.ciecieLink && <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ color: '#7b1fa2' }}>📄 Cięcie</a>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
