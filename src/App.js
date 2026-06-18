@@ -217,7 +217,7 @@ export default function App() {
     }
     try {
       setIsLoading(true);
-      if (orders.find(o => o.id === newOrderNum && o.status !== 'archived')) {
+      if (orders.find(o => o.id === newOrderNum && o.status !== 'archived' && o.status !== 'none')) {
         alert('Zamówienie już istnieje');
         return;
       }
@@ -799,7 +799,10 @@ export default function App() {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { [field]: !(order[field] || false), history: [...(order.history || []), historyEntry(`${!(order[field] || false) ? 'Zaznaczono' : 'Odznaczono'}: ${field}`)] });
+      const newVal = !(order[field] || false);
+      const updates = { [field]: newVal, history: [...(order.history || []), historyEntry(`${newVal ? 'Zaznaczono' : 'Odznaczono'}: ${field}`)] };
+      if (field === 'brakAkcesoriow' && newVal) { updates['złożone'] = false; updates['dołożone'] = false; }
+      await updateDoc(orderRef, updates);
     } catch (err) { alert('Błąd: ' + err.message); }
   };
 
@@ -839,17 +842,26 @@ export default function App() {
     finally { setIsLoading(false); }
   };
 
-  const handleAddTkNote = async (orderId) => {
-    const note = window.prompt('Dodaj notatkę:');
-    if (!note?.trim()) return;
+  const handleAddTkNote = async (orderId, noteText) => {
+    if (!noteText?.trim()) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       await updateDoc(orderRef, {
-        trudnyKlientNotatki: [...(order.trudnyKlientNotatki || []), { text: note, date: new Date().toISOString(), user: currentUser?.name || '?' }],
-        history: [...(order.history || []), historyEntry(`Dodano notatkę TK: ${note.substring(0, 30)}...`)]
+        trudnyKlientNotatki: [...(order.trudnyKlientNotatki || []), { text: noteText, date: new Date().toISOString(), user: currentUser?.name || '?' }],
+        history: [...(order.history || []), historyEntry(`Dodano notatkę TK: ${noteText.substring(0, 30)}...`)]
       });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
+  const handleArchiveTrudnyKlient = async (orderId) => {
+    if (!window.confirm('Przenieść do archiwum trudnych klientów?')) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { trudnyKlientArchived: true, history: [...(order.history || []), historyEntry('Trudny klient → archiwum')] });
     } catch (err) { alert('Błąd: ' + err.message); }
   };
 
@@ -930,7 +942,7 @@ export default function App() {
   const wydaneOrders = orders.filter(o => o.wydane && !o.wycięte).sort(sortByKanapka);
   const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByKanapka);
   const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
-  const trudnyKlientOrders = orders.filter(o => o.trudnyKlient).sort(sortByNum);
+  const trudnyKlientOrders = orders.filter(o => o.trudnyKlient && !o.trudnyKlientArchived).sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -991,7 +1003,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23.2</h2>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23.3</h2>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1057,7 +1069,8 @@ export default function App() {
                           {order.inAkcesoria && <span style={{ fontSize: '13px', color: '#388e3c' }} title="W akcesoriach">✅ akc.</span>}
                           {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
                           {order.terminRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#1976d2' }} title="Termin realizacji">📅 {order.terminRealizacji}</span>}
-                          {order.brakAkcesoriow && <span style={{ fontSize: '12px', background: '#ffebee', color: '#c62828', padding: '1px 6px', borderRadius: '4px' }}>❌ brak akces.</span>}
+                          {order.brakAkcesoriow && <span style={{ fontSize: '13px', background: '#ffebee', color: '#c62828', padding: '2px 6px', borderRadius: '4px' }} title="Brak akcesoriów">❌ brak akces.</span>}
+                          {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
                         </div>
                       </div>
                       <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -1119,7 +1132,7 @@ export default function App() {
 
                       <div style={{ marginBottom: '1rem' }}>
                         <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <input type="checkbox" checked={order.brakAkcesoriow || false} onChange={() => handleUpdateOrderField(order.id, 'brakAkcesoriow', !(order.brakAkcesoriow || false))} />
+                          <input type="checkbox" checked={order.brakAkcesoriow || false} onChange={() => handleToggleAkcesoria(order.id, 'brakAkcesoriow')} />
                           ❌ Brak akcesoriów
                         </label>
                       </div>
@@ -1161,6 +1174,8 @@ export default function App() {
                         <div style={{ display: 'flex', gap: '8px', fontSize: '14px', marginTop: '2px' }}>
                           {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }} title="Akcesoria złożone">✅ złożone</span>}
                           {order.dołożone && <span style={{ background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }} title="Dołożone do palety">📦 dołożone</span>}
+                          {order.brakAkcesoriow && <span style={{ fontSize: '13px', background: '#ffebee', color: '#c62828', padding: '2px 6px', borderRadius: '4px' }} title="Brak akcesoriów">❌ brak</span>}
+                          {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
                         </div>
                       </div>
                       <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -1231,7 +1246,7 @@ export default function App() {
                 <React.Fragment key={order.docId}>
                   <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                     <div style={{ fontWeight: 'bold' }}>#{order.id}</div>
-                    {order.trudnyKlient && <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px', display: 'inline-block' }}>⚠️ TRUDNY KLIENT</div>}
+                    {order.trudnyKlient && <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px', display: 'inline-block' }}>⚠️ TRUDNY KLIENT</div>}
                     <div style={{ fontSize: '12px', color: '#666' }}>
                       {order.problems?.length > 0 ? (
                         <>Błędy: {order.problems.length} | Naprawione: {order.problems.filter(p => p.cut && p.repaired).length}</>
@@ -1303,8 +1318,11 @@ export default function App() {
               {readyOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => (
                 <div key={order.docId} className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                    {order.trudnyKlient && <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px', marginLeft: '8px' }}>⚠️ TRUDNY KLIENT</span>}
+                    <h3 style={{ margin: 0 }}>#{order.id}
+                      {order.kanapka && <span style={{ fontSize: '13px', color: '#666', marginLeft: '8px' }}>🥪 {order.kanapka}</span>}
+                      {order.brakAkcesoriow && <span style={{ fontSize: '13px', background: '#ffebee', color: '#c62828', padding: '2px 6px', borderRadius: '4px', marginLeft: '4px' }}>❌</span>}
+                    </h3>
+                    {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TRUDNY KLIENT</span>}
                     <div>
                       <button className="btn btn-primary" onClick={() => handleMoveFromReady(order.id, 'pallet')} disabled={isLoading} style={{ marginRight: '0.5rem' }}>🎨 Paletowy</button>
                       <button className="btn btn-primary" onClick={() => handleMoveFromReady(order.id, 'dedicated')} disabled={isLoading} style={{ marginRight: '0.5rem' }}>📦 Dedykowana</button>
@@ -1338,14 +1356,16 @@ export default function App() {
                     <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
-                          <h3 style={{ margin: '0 0 4px 0' }}>#{order.id} {order.trudnyKlient && <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px' }}>⚠️ TK</span>}</h3>
+                          <h3 style={{ margin: '0 0 4px 0' }}>#{order.id} {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}</h3>
                           {order.uwagi && <p style={{ fontSize: '13px', color: '#1976d2', margin: '0 0 2px 0' }}>💬 {order.uwagi}</p>}
                           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                             {order.transportDate && <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#333' }}>📅 {order.transportDate}</span>}
                             {order.dateConfirmed && <span style={{ fontSize: '13px', color: '#388e3c' }}>✅ potwierdzona</span>}
                             {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
+                            {order.kanapka && <span style={{ fontSize: '13px', color: '#666' }}>🥪 {order.kanapka}</span>}
                             {order.złożone && <span style={{ fontSize: '13px', background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }} title="Akcesoria złożone">🧩 złożone</span>}
                             {order.dołożone && <span style={{ fontSize: '13px', background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }} title="Dołożone do palety">📦 dołożone</span>}
+                            {order.brakAkcesoriow && <span style={{ fontSize: '13px', background: '#ffebee', color: '#c62828', padding: '2px 6px', borderRadius: '4px' }} title="Brak akcesoriów">❌</span>}
                           </div>
                         </div>
                         <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
@@ -1620,15 +1640,17 @@ export default function App() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div style={{ flex: 1 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            <h3 style={{ margin: 0 }}>#{order.id} {order.trudnyKlient && <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '1px 6px', borderRadius: '3px' }}>⚠️ TK</span>}</h3>
+                            <h3 style={{ margin: 0 }}>#{order.id} {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}</h3>
                             {order.transportDate && <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>📅 {order.transportDate}</span>}
                             {!isRaben && order.paleta && <span style={{ fontSize: '15px', background: '#e1bee7', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>P{order.paleta}</span>}
                             {order.spakowane && <span style={{ fontSize: '15px', background: '#fff3cd', padding: '2px 8px', borderRadius: '4px' }} title="Spakowane">📦</span>}
                             {order.wyslane && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }} title="Wysłane">🚚</span>}
                             {order.dostarczone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }} title="Dostarczone">✅</span>}
                             {order.attachments?.length > 0 && <span style={{ fontSize: '15px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
+                            {order.kanapka && <span style={{ fontSize: '14px', color: '#666' }}>🥪 {order.kanapka}</span>}
                             {order.złożone && <span style={{ fontSize: '15px', background: '#d4edda', padding: '2px 8px', borderRadius: '4px' }} title="Akcesoria złożone">🧩</span>}
                             {order.dołożone && <span style={{ fontSize: '15px', background: '#cce5ff', padding: '2px 8px', borderRadius: '4px' }} title="Dołożone do palety">📦dł</span>}
+                            {order.brakAkcesoriow && <span style={{ fontSize: '15px', background: '#ffebee', color: '#c62828', padding: '2px 8px', borderRadius: '4px' }} title="Brak akcesoriów">❌</span>}
                           </div>
                           {order.uwagi && <p style={{ fontSize: '13px', color: '#1976d2', margin: '4px 0 0 0' }}>💬 {order.uwagi}</p>}
                         </div>
@@ -1765,9 +1787,8 @@ export default function App() {
                 <div key={order.docId} className="card" style={{ borderLeft: '3px solid #f44336' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
                     <h3 style={{ margin: 0, color: '#c62828' }}>⚠️ #{order.id}</h3>
-                    <button className="btn btn-primary" onClick={() => handleAddTkNote(order.id)} disabled={isLoading} style={{ padding: '4px 12px', fontSize: '12px' }}>+ Notatka</button>
+                    <button className="btn btn-danger" onClick={() => handleArchiveTrudnyKlient(order.id)} disabled={isLoading} style={{ padding: '4px 10px', fontSize: '11px' }}>🗄️ Archiwum</button>
                   </div>
-                  {(order.trudnyKlientNotatki || []).length === 0 && <p style={{ fontSize: '12px', color: '#999' }}>Brak notatek</p>}
                   {(order.trudnyKlientNotatki || []).map((n, idx) => (
                     <div key={idx} style={{ background: '#ffebee', padding: '8px 12px', borderRadius: '4px', marginBottom: '4px', fontSize: '13px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
@@ -1777,6 +1798,10 @@ export default function App() {
                       <p style={{ margin: 0 }}>{n.text}</p>
                     </div>
                   ))}
+                  <div style={{ marginTop: '0.75rem', display: 'flex', gap: '8px' }}>
+                    <textarea id={`tk-note-${order.id}`} placeholder="Nowa notatka..." style={{ flex: 1, height: '50px', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }} />
+                    <button className="btn btn-primary" onClick={() => { const el = document.getElementById(`tk-note-${order.id}`); handleAddTkNote(order.id, el.value); el.value = ''; }} disabled={isLoading} style={{ padding: '8px 16px', alignSelf: 'flex-end' }}>Dodaj</button>
+                  </div>
                 </div>
               ))}
             </div>
