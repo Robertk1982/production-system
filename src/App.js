@@ -1467,8 +1467,6 @@ export default function App() {
             {visibleTabs.includes('admin') && <button className={`tab-btn ${activeTab === 'admin' ? 'active' : ''}`} onClick={() => { setActiveTab('admin'); setSearchQuery(''); }}>⚙️ Admin</button>}
           </div>
 
-          </div>
-
           {/* ===== WYDANE NA PRODUKCJĘ (z Prestashop) ===== */}
           {activeTab === 'wydane_na_produkcje' && (() => {
             const canManage = getUserAccess(currentUser).wydane_na_produkcje_manage;
