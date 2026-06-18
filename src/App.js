@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
+import * as XLSX from 'xlsx';
 import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
 
 const FIREBASE_CONFIG = {
@@ -25,6 +26,9 @@ const ACCESS_FOLDERS = [
   { key: 'wydane', label: 'Wydane na produkcję (widok)' },
   { key: 'wydane_manage', label: 'Wydane na produkcję (zarządzanie)' },
   { key: 'akcesoria', label: 'Akcesoria' },
+  { key: 'prestashop', label: 'Prestashop (widok)' },
+  { key: 'prestashop_manage', label: 'Prestashop (zarządzanie)' },
+  { key: 'prestashop_poprawione', label: 'Prestashop (poprawione)' },
   { key: 'orders', label: 'Zamówienia (widok)' },
   { key: 'orders_manage', label: 'Zamówienia (dodawanie)' },
   { key: 'ready', label: 'Gotowe' },
@@ -127,6 +131,7 @@ export default function App() {
   const [wydaneTermin, setWydaneTermin] = useState('');
   const [tkOrderNum, setTkOrderNum] = useState('');
   const [tkNote, setTkNote] = useState('');
+  const [importingExcel, setImportingExcel] = useState(false);
   const [wydaneKanapka, setWydaneKanapka] = useState('');
 
   const historyEntry = (action) => ({
@@ -187,7 +192,7 @@ export default function App() {
       setAppState('dashboard');
       // Reset to first available tab for THIS user
       const a = getUserAccess(user);
-      const firstTab = (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.trudny_klient ? 'trudny_klient' : a.admin ? 'admin' : 'orders';
+      const firstTab = (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.prestashop || a.prestashop_manage) ? 'prestashop' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.trudny_klient ? 'trudny_klient' : a.admin ? 'admin' : 'orders';
       setActiveTab(firstTab);
     } else {
       alert('Błędne dane logowania');
@@ -637,6 +642,7 @@ export default function App() {
 
   const ATTACHMENTS_FOLDER_ID = '1EtAmIu6Cr8f3jD9JQC3G3nNE0M3Gf_bD';
   const WYDANE_FOLDER_ID = '1tpZdY9yDGnbXUD-5e4ev_Sk962Z4MnMf';
+  const CSV_DRIVE_FOLDER_ID = '0ALO7nCAWeZ9QUk9PVA';
 
   const handleUploadAttachment = async (orderId, file, targetFolderId) => {
     const driveFolderId = targetFolderId || ATTACHMENTS_FOLDER_ID;
@@ -882,6 +888,151 @@ export default function App() {
     } catch (err) { alert('Błąd: ' + err.message); }
   };
 
+  const PALETA_OPTIONS = ['1200', '1400', '1600', '1800', '2000', '2200', '2400', '2600', '2800', 'NASZA'];
+
+  const handleImportExcel = async (file) => {
+    if (!file) return;
+    try {
+      setImportingExcel(true);
+      const data = await file.arrayBuffer();
+      const wb = XLSX.read(data);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      let added = 0, skipped = 0;
+      for (const row of rows) {
+        const orderId = String(row['ID Zamówienia'] || '').trim();
+        if (!orderId) continue;
+        const existing = orders.find(o => o.id === orderId && o.inPrestashop);
+        if (existing) { skipped++; continue; }
+
+        const existingOrder = orders.find(o => o.id === orderId);
+        if (existingOrder) {
+          const orderRef = doc(db, 'orders', existingOrder.docId);
+          await updateDoc(orderRef, {
+            inPrestashop: true,
+            prestashopData: {
+              dataDodania: row['Data dodania'] ? new Date(row['Data dodania']).toLocaleDateString('pl-PL') : '',
+              dataRealizacji: String(row['Data Realizacji'] || ''),
+              transport: String(row['Transport'] || ''),
+              wartosc: String(row['Wartość zamówienia'] || ''),
+              kodPocztowy: String(row['Kod pocztowy klienta'] || '')
+            },
+            history: [...(existingOrder.history || []), historyEntry('Import z Prestashop (Excel)')]
+          });
+        } else {
+          await addDoc(collection(db, 'orders'), {
+            id: orderId, status: 'none', createdAt: new Date().toISOString(),
+            problems: [], photoCount: 0, photoArchived: false,
+            inPrestashop: true,
+            prestashopData: {
+              dataDodania: row['Data dodania'] ? new Date(row['Data dodania']).toLocaleDateString('pl-PL') : '',
+              dataRealizacji: String(row['Data Realizacji'] || ''),
+              transport: String(row['Transport'] || ''),
+              wartosc: String(row['Wartość zamówienia'] || ''),
+              kodPocztowy: String(row['Kod pocztowy klienta'] || '')
+            },
+            history: [historyEntry('Import z Prestashop (Excel)')]
+          });
+        }
+        added++;
+      }
+      alert(`✅ Import zakończony: ${added} dodanych, ${skipped} pominiętych (już w systemie)`);
+    } catch (err) {
+      alert('❌ Błąd importu: ' + err.message);
+    } finally { setImportingExcel(false); }
+  };
+
+  const handleLoadCsv = async (orderId) => {
+    if (!accessToken) { alert('Najpierw autoryzuj Google Drive'); return; }
+    try {
+      setIsLoading(true);
+      setUploadMessage(`⏳ Szukam plików CSV dla zamówienia #${orderId}...`);
+
+      const searchResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q='${CSV_DRIVE_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and name contains '${orderId}' and trashed=false&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=10`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const folders = await searchResp.json();
+
+      if (!folders.files || folders.files.length === 0) {
+        setUploadMessage(`❌ Nie znaleziono folderu dla zamówienia #${orderId}`);
+        return;
+      }
+
+      const allCsvData = [];
+      for (const folder of folders.files) {
+        const csvResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q='${folder.id}' in parents and name contains '_out.csv' and trashed=false&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=50&fields=files(id,name)`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const csvFiles = await csvResp.json();
+        if (!csvFiles.files) continue;
+
+        for (const csvFile of csvFiles.files) {
+          const contentResp = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${csvFile.id}?alt=media&supportsAllDrives=true`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          const csvText = await contentResp.text();
+          const rows = csvText.trim().split('\n').map(r => r.trim().replace(/\r/g, '').split(';'));
+
+          const fileName = csvFile.name;
+          const parts = fileName.replace('_out.csv', '').split('_');
+          const colorName = parts.slice(1).join('_');
+          const isThickened = fileName.includes('_36_out');
+          const isCountertop = fileName.includes('_38_out');
+
+          allCsvData.push({
+            fileName, colorName, isThickened, isCountertop,
+            rowCount: rows.length,
+            rows: rows.map((cols, idx) => ({
+              idx,
+              name: cols[0] || '', part: cols[1] || '', material: cols[2] || '',
+              length: cols[3] || '', width: cols[4] || '', qty: cols[5] || '',
+              edgeLong1: cols[6] || '', edgeLong2: cols[7] || '',
+              edgeShort1: cols[8] || '', edgeShort2: cols[9] || '',
+              col11: cols[10] || '', barcode1: cols[11] || '',
+              barcode: cols[12] || '', col14: cols[13] || '',
+              scanned: false
+            }))
+          });
+        }
+      }
+
+      const order = orders.find(o => o.id === orderId);
+      if (order) {
+        const orderRef = doc(db, 'orders', order.docId);
+        const totalFormats = allCsvData.reduce((sum, c) => sum + c.rowCount, 0);
+        await updateDoc(orderRef, {
+          csvData: allCsvData, csvLoaded: true, totalFormats,
+          history: [...(order.history || []), historyEntry(`Pobrano ${allCsvData.length} plików CSV (${totalFormats} formatek)`)]
+        });
+        setUploadMessage(`✅ Pobrano ${allCsvData.length} kolorów, ${totalFormats} formatek`);
+      }
+    } catch (err) {
+      setUploadMessage(`❌ Błąd: ${err.message}`);
+    } finally { setIsLoading(false); }
+  };
+
+  const canMoveToProduction = (order) => {
+    if (!order.prestashopData) return false;
+    const d = order.prestashopData;
+    if (!d.dataRealizacji || !d.transport || !d.wartosc || !d.kodPocztowy) return false;
+    if (!order.paletaPrestashop) return false;
+    return true;
+  };
+
+  const handleMoveToProduction = async (orderId) => {
+    if (!window.confirm(`Przenieść zamówienie #${orderId} na produkcję?`)) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { movedToProduction: true, history: [...(order.history || []), historyEntry('Przeniesione na produkcję')] });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
   const handleTransferOrder = (orderId, fromStatus) => {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
@@ -943,6 +1094,7 @@ export default function App() {
   const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByKanapka);
   const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
   const trudnyKlientOrders = orders.filter(o => o.trudnyKlient && !o.trudnyKlientArchived).sort(sortByNum);
+  const prestashopOrders = orders.filter(o => o.inPrestashop && !o.movedToProduction).sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -952,6 +1104,7 @@ export default function App() {
     const tabs = [];
     if (a.wydane || a.wydane_manage) tabs.push('wydane');
     if (a.akcesoria) tabs.push('akcesoria');
+    if (a.prestashop || a.prestashop_manage || a.prestashop_poprawione) tabs.push('prestashop');
     if (a.orders || a.orders_manage) tabs.push('orders');
     if (a.ready) tabs.push('ready');
     if (a.pallet) tabs.push('pallet');
@@ -1003,7 +1156,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v23.3</h2>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v24</h2>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1021,6 +1174,7 @@ export default function App() {
           <div className="tabs">
             {visibleTabs.includes('wydane') && <button className={`tab-btn ${activeTab === 'wydane' ? 'active' : ''}`} onClick={() => { setActiveTab('wydane'); setSearchQuery(''); }}>🔧 Wydane</button>}
             {visibleTabs.includes('akcesoria') && <button className={`tab-btn ${activeTab === 'akcesoria' ? 'active' : ''}`} onClick={() => { setActiveTab('akcesoria'); setSearchQuery(''); }}>🧩 Akcesoria</button>}
+            {visibleTabs.includes('prestashop') && <button className={`tab-btn ${activeTab === 'prestashop' ? 'active' : ''}`} onClick={() => { setActiveTab('prestashop'); setSearchQuery(''); }}>🛒 Prestashop</button>}
             {visibleTabs.includes('orders') && <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => { setActiveTab('orders'); setSearchQuery(''); }}>📦 Zamówienia</button>}
             {visibleTabs.includes('ready') && <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => { setActiveTab('ready'); setSearchQuery(''); }}>📋 Gotowe</button>}
             {visibleTabs.includes('pallet') && <button className={`tab-btn ${activeTab === 'pallet' ? 'active' : ''}`} onClick={() => { setActiveTab('pallet'); setSearchQuery(''); }}>🎨 Paletowy</button>}
@@ -1225,6 +1379,130 @@ export default function App() {
               ))}
             </div>
           )}
+
+          {activeTab === 'prestashop' && (() => {
+            const ua = getUserAccess(currentUser);
+            const canManagePS = ua.prestashop_manage;
+            const canPoprawione = ua.prestashop_poprawione || canManagePS;
+            return (
+              <div>
+                <h2>🛒 Prestashop ({prestashopOrders.length})</h2>
+
+                {canManagePS && (
+                  <div className="card">
+                    <h3>Import zamówień z Excel</h3>
+                    <input type="file" accept=".xlsx,.xls" onChange={e => { const f = e.target.files?.[0]; if (f) handleImportExcel(f); e.target.value = ''; }} disabled={importingExcel} style={{ marginBottom: '0.5rem' }} />
+                    {importingExcel && <p style={{ color: '#1976d2', fontSize: '12px' }}>⏳ Importowanie...</p>}
+                  </div>
+                )}
+
+                {uploadMessage && <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>{uploadMessage}</div>}
+
+                <div className="search-box">
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
+                </div>
+
+                {prestashopOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
+                {prestashopOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
+                  const ps = order.prestashopData || {};
+                  return (
+                    <React.Fragment key={order.docId}>
+                      <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                              {ps.dataRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }} title="Data realizacji">📅 {ps.dataRealizacji}</span>}
+                              {order.paletaPrestashop && <span style={{ fontSize: '13px', background: '#e3f2fd', padding: '2px 6px', borderRadius: '4px' }} title="Paleta">🎨 {order.paletaPrestashop}</span>}
+                              {order.sprawdzone && <span style={{ fontSize: '14px' }} title="Sprawdzone">✅</span>}
+                              {order.bledy && <span style={{ fontSize: '14px' }} title="Błędy">❌</span>}
+                              {order.poprawione && <span style={{ fontSize: '14px' }} title="Poprawione">🔧</span>}
+                              {order.csvLoaded && <span style={{ fontSize: '13px', background: '#e8f5e9', padding: '2px 6px', borderRadius: '4px' }} title="CSV pobrane">📄 {order.csvData?.length || 0} kolorów</span>}
+                              {order.csvData?.some(c => c.isThickened) && <span style={{ fontSize: '14px', background: '#fff3cd', padding: '2px 6px', borderRadius: '4px' }} title="Pogrubienie">🔲 pogr.</span>}
+                              {order.csvData?.some(c => c.isCountertop) && <span style={{ fontSize: '14px', background: '#fce4ec', padding: '2px 6px', borderRadius: '4px' }} title="Blat kuchenny">🍳 blat</span>}
+                              {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
+                              {ps.transport && <span style={{ marginRight: '8px' }}>{ps.transport.substring(0, 50)}{ps.transport.length > 50 ? '...' : ''}</span>}
+                              {ps.wartosc && <span style={{ fontWeight: 'bold' }}>💰 {ps.wartosc} zł</span>}
+                            </div>
+                          </div>
+                          <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
+                        </div>
+                      </div>
+
+                      {selectedOrderId === order.id && (
+                        <div className="card" style={{ borderLeft: '3px solid #2196F3' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '1rem', fontSize: '13px' }}>
+                            <div><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
+                            <div><strong>Data realizacji:</strong> {ps.dataRealizacji || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
+                            <div><strong>Transport:</strong> {ps.transport || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
+                            <div><strong>Wartość:</strong> {ps.wartosc || <span style={{ color: '#f44336' }}>⚠️ brak</span>} zł</div>
+                            <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
+                            <div><strong>Formatki:</strong> {order.totalFormats || '—'}</div>
+                          </div>
+
+                          {order.csvData && order.csvData.length > 0 && (
+                            <div style={{ marginBottom: '1rem', background: '#f5f5f5', padding: '8px', borderRadius: '4px' }}>
+                              <p style={{ fontSize: '12px', fontWeight: 'bold', margin: '0 0 4px 0' }}>📄 Kolory ({order.csvData.length}):</p>
+                              {order.csvData.map((c, i) => (
+                                <div key={i} style={{ fontSize: '12px', display: 'flex', gap: '8px', padding: '2px 0' }}>
+                                  <span style={{ fontWeight: 'bold' }}>{c.colorName}</span>
+                                  <span>{c.rowCount} formatek</span>
+                                  {c.isThickened && <span style={{ background: '#fff3cd', padding: '0 4px', borderRadius: '2px' }}>pogr.</span>}
+                                  {c.isCountertop && <span style={{ background: '#fce4ec', padding: '0 4px', borderRadius: '2px' }}>blat</span>}
+                                </div>
+                              ))}
+                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginTop: '4px', borderTop: '1px solid #ddd', paddingTop: '4px' }}>Razem: {order.totalFormats} formatek</div>
+                            </div>
+                          )}
+
+                          <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <input type="checkbox" checked={order.sprawdzone || false} onChange={() => canManagePS && handleUpdateOrderField(order.id, 'sprawdzone', !(order.sprawdzone || false))} disabled={!canManagePS} /> Sprawdzone
+                            </label>
+                            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <input type="checkbox" checked={order.bledy || false} onChange={() => canManagePS && handleUpdateOrderField(order.id, 'bledy', !(order.bledy || false))} disabled={!canManagePS} /> Błędy
+                            </label>
+                            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <input type="checkbox" checked={order.poprawione || false} onChange={() => canPoprawione && handleUpdateOrderField(order.id, 'poprawione', !(order.poprawione || false))} disabled={!canPoprawione} /> Poprawione
+                            </label>
+                          </div>
+
+                          <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🎨 Paleta:</label>
+                            {canManagePS ? (
+                              <select value={order.paletaPrestashop || ''} onChange={e => handleUpdateOrderField(order.id, 'paletaPrestashop', e.target.value || null)} style={{ width: '100%', padding: '6px' }}>
+                                <option value="">-- wybierz --</option>
+                                {PALETA_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                              </select>
+                            ) : (
+                              <span>{order.paletaPrestashop || '—'}</span>
+                            )}
+                          </div>
+
+                          <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Uwagi:</label>
+                            <textarea value={order.prestashopUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'prestashopUwagi', e.target.value)} placeholder="Uwagi..." style={{ width: '100%', height: '50px' }} />
+                          </div>
+
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {canManagePS && !order.csvLoaded && (
+                              <button className="btn btn-primary" onClick={() => handleLoadCsv(order.id)} disabled={isLoading} style={{ flex: 1 }}>📄 Pobierz CSV z Drive</button>
+                            )}
+                            {canManagePS && (
+                              <button className="btn btn-success" onClick={() => handleMoveToProduction(order.id)} disabled={isLoading || !canMoveToProduction(order)} style={{ flex: 1 }} title={!canMoveToProduction(order) ? 'Uzupełnij brakujące dane i wybierz paletę' : ''}>🏭 Na produkcję</button>
+                            )}
+                          </div>
+                          {!canMoveToProduction(order) && <p style={{ fontSize: '11px', color: '#f44336', marginTop: '4px' }}>⚠️ Uzupełnij brakujące dane i wybierz paletę aby przenieść</p>}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           {activeTab === 'orders' && (
             <div>
