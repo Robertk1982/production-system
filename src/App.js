@@ -900,6 +900,26 @@ export default function App() {
 
   const PALETA_OPTIONS = ['1200', '1400', '1600', '1800', '2000', '2200', '2400', '2600', '2800', 'NASZA'];
 
+  const DEFAULT_TRANSPORTS = [
+    'Dostawa kurierska paletowa (Raben)',
+    'Dostawa kurierska paletowa (DPD)',
+    'Dostawa kurierska paletowa (DHL)',
+    'Dostawa dedykowana Flexmeble',
+    'Dostawa kurierska (DPD)',
+    'Dostawa kurierska (DHL)',
+    'Odbiór własny',
+  ];
+
+  // Get all unique transports from orders + defaults, sorted
+  const getKnownTransports = () => {
+    const fromOrders = orders
+      .filter(o => o.prestashopData?.transport)
+      .map(o => o.prestashopData.transport.trim())
+      .filter(t => t.length > 0);
+    const all = [...new Set([...DEFAULT_TRANSPORTS, ...fromOrders])];
+    return all.sort();
+  };
+
   const handleImportExcel = async (file) => {
     if (!file) return;
     try {
@@ -1056,9 +1076,40 @@ export default function App() {
         await updateDoc(orderRef, {
           csvData: allCsvData, csvLoaded: true, totalFormats, hasNoDrilling, colorCountExclHdf, longestElement,
           ...(autoPaleta ? { paletaPrestashop: autoPaleta } : {}),
-          history: [...(order.history || []), historyEntry(`Pobrano ${allCsvData.length} plikow CSV (${totalFormats} formatek)${autoPaleta ? ' | Auto-paleta: ' + autoPaleta : ''}`)]
+          dekoryNeedCheck: true,
+          history: [...(order.history || []), historyEntry('Pobrano ' + allCsvData.length + ' plikow CSV (' + totalFormats + ' formatek)' + (autoPaleta ? ' | Auto-paleta: ' + autoPaleta : ''))]
         });
-        setUploadMessage(`Pobrano ${allCsvData.length} kolorow, ${totalFormats} formatek${autoPaleta ? ' | Paleta auto: ' + autoPaleta : ''}`);
+
+        // Auto-pobierz linki do plikow akcesoriow i produkcyjnych
+        setUploadMessage('Szukam plikow akcesoriow dla #' + orderId + '...');
+        let okucLink = null, ciecieLink = null, aFile = null, bFile = null;
+        for (const folder of folders.files) {
+          const allFilesResp = await fetch(
+            'https://www.googleapis.com/drive/v3/files?q=\'' + folder.id + '\' in parents and trashed=false&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100&fields=files(id,name,webViewLink)',
+            { headers: { Authorization: 'Bearer ' + accessToken } }
+          );
+          const allFilesData = await allFilesResp.json();
+          if (!allFilesData.files) continue;
+          for (const f of allFilesData.files) {
+            if (f.name === 'PL-01_Raport_okuc_skrocony.pdf') okucLink = f.webViewLink;
+            if (f.name === 'PL_Ciecie_dluzycy.pdf') ciecieLink = f.webViewLink;
+            if (f.name === 'A_' + orderId || f.name === 'A_' + orderId + '.pdf') aFile = f.webViewLink;
+            if (f.name === 'B_' + orderId || f.name === 'B_' + orderId + '.pdf') bFile = f.webViewLink;
+          }
+        }
+        const hasNoAcc = !okucLink && !ciecieLink;
+        if (hasNoAcc) {
+          const userChoice = window.confirm('Czy jestes pewny, ze w zamowieniu nie ma akcesoriow?\n\nOK = Brak akcesoriow\nAnuluj = Sa akcesoria - uzupelnie katalog CSV i ponowie probe');
+          if (!userChoice) {
+            setUploadMessage('Uzupelnij katalog CSV z plikami akcesoriow i pobierz CSV ponownie.');
+            return;
+          }
+        }
+        await updateDoc(orderRef, {
+          accessoryLinks: { okucLink, ciecieLink, aFile, bFile },
+          history: [...(order.history || []), historyEntry('Linki plikow: akcesoria=' + (hasNoAcc ? 'brak' : 'tak') + ', A=' + (aFile ? 'tak' : 'brak') + ', B=' + (bFile ? 'tak' : 'brak'))]
+        });
+        setUploadMessage('CSV pobrane' + (autoPaleta ? ' | Paleta: ' + autoPaleta : '') + (hasNoAcc ? ' | Brak akcesoriow' : ' | Akcesoria: OK') + ([aFile && 'A_' + orderId, bFile && 'B_' + orderId].filter(Boolean).length ? ' | Prod: ' + [aFile && 'A_' + orderId, bFile && 'B_' + orderId].filter(Boolean).join(', ') : ''));
       }
     } catch (err) {
       setUploadMessage(`❌ Błąd: ${err.message}`);
@@ -1502,6 +1553,22 @@ export default function App() {
                           <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
                           <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Paleta:</strong> {order.paletaPrestashop || '—'}</div>
 
+                          {/* Kanapka + pozycja */}
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
+                            <div>
+                              <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '2px' }}>🥪 Numer kanapki:</label>
+                              <input type="text" defaultValue={order.kanapka || ''} placeholder="np. K123 lub R45"
+                                onBlur={e => { if (e.target.value !== (order.kanapka || '')) handleUpdateOrderField(order.id, 'kanapka', e.target.value); }}
+                                style={{ width: '100%', padding: '5px' }} />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '2px' }}>📍 Pozycja na kanapce:</label>
+                              <input type="text" defaultValue={order.kanapkaPozycja || ''} placeholder="np. 1, 2, 3..."
+                                onBlur={e => { if (e.target.value !== (order.kanapkaPozycja || '')) handleUpdateOrderField(order.id, 'kanapkaPozycja', e.target.value); }}
+                                style={{ width: '100%', padding: '5px' }} />
+                            </div>
+                          </div>
+
                           {/* Linki do akcesoriów */}
                           {order.accessoryLinks && (
                             <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
@@ -1860,10 +1927,19 @@ export default function App() {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
                         <input type="text" value={manualOrderId} onChange={e => setManualOrderId(e.target.value)} placeholder="Nr zamówienia" />
                         <input type="date" value={manualDataRealizacji} onChange={e => setManualDataRealizacji(e.target.value)} />
-                        <input type="text" value={manualTransport} onChange={e => setManualTransport(e.target.value)} placeholder="Transport" />
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <select value={manualTransport} onChange={e => setManualTransport(e.target.value)} style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}>
+                            <option value="">-- wybierz transport --</option>
+                            {getKnownTransports().map(t => <option key={t} value={t}>{t}</option>)}
+                            <option value="__custom__">+ Wpisz własny...</option>
+                          </select>
+                          {manualTransport === '__custom__' && (
+                            <input type="text" placeholder="Wpisz rodzaj transportu" onChange={e => setManualTransport(e.target.value)} style={{ width: '100%', padding: '8px', border: '1px solid #2196F3', borderRadius: '4px', marginTop: '4px' }} autoFocus />
+                          )}
+                        </div>
                         <input type="text" value={manualWartosc} onChange={e => setManualWartosc(e.target.value)} placeholder="Wartość" />
                         <input type="text" value={manualKodPocztowy} onChange={e => setManualKodPocztowy(e.target.value)} placeholder="Kod pocztowy" />
-                        <button className="btn btn-success" onClick={handleManualPrestashopOrder} disabled={isLoading}>Dodaj</button>
+                        <button className="btn btn-success" onClick={handleManualPrestashopOrder} disabled={isLoading} style={{ gridColumn: '1 / -1' }}>Dodaj</button>
                       </div>
                     </div>
                   </>
@@ -2011,22 +2087,75 @@ export default function App() {
                             <textarea value={order.prestashopUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'prestashopUwagi', e.target.value)} placeholder="Uwagi..." style={{ width: '100%', height: '50px' }} />
                           </div>
 
-                          {/* 🎨 SPRAWDZENIE KOLORÓW */}
-                          <div style={{ background: order.colorChecked ? '#e8f5e9' : '#fff3e0', border: `2px solid ${order.colorChecked ? '#4caf50' : '#ff9800'}`, borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          {/* 🎨 SPRAWDZENIE KOLORÓW — tabela drag&drop */}
+                          <div style={{ background: order.colorChecked ? '#e8f5e9' : '#fff3e0', border: '2px solid ' + (order.colorChecked ? '#4caf50' : '#ff9800'), borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                               <span style={{ fontSize: '14px', fontWeight: 'bold' }}>{order.colorChecked ? '✅ Kolory sprawdzone' : '⚠️ KOLORY NIE SPRAWDZONE'}</span>
-                              {canManagePS && (
-                                <button className="btn" onClick={() => handleUpdateOrderField(order.id, 'colorChecked', !order.colorChecked)} style={{ fontSize: '11px', padding: '2px 8px', borderColor: order.colorChecked ? '#f44336' : '#4caf50', color: order.colorChecked ? '#f44336' : '#4caf50' }}>
-                                  {order.colorChecked ? 'Cofnij' : '✓ Oznacz sprawdzone'}
-                                </button>
+                              {canManagePS && order.colorChecked && (
+                                <button className="btn" onClick={() => handleUpdateOrderField(order.id, 'colorChecked', false)} style={{ fontSize: '11px', padding: '2px 8px', borderColor: '#f44336', color: '#f44336' }}>Cofnij</button>
                               )}
                             </div>
-                            {!order.colorChecked && <p style={{ fontSize: '11px', color: '#e65100', margin: '4px 0 0' }}>Sprawdź kolory z CSV vs dekorami — wymagane przed produkcją.</p>}
+                            {!order.colorChecked && order.csvLoaded && order.prestashopData?.dekoryRaw && (() => {
+                              const csvColors = (order.csvData || [])
+                                .filter(c => !c.colorName.toLowerCase().includes('hdf'))
+                                .filter(c => (c.surfaceArea || 0) > 0)
+                                .map(c => {
+                                  let name = c.colorName;
+                                  if (c.isCountertop) name = 'blat_' + name;
+                                  return { key: c.fileName, name, surfaceArea: c.surfaceArea };
+                                });
+                              const excelDekory = parseDekoryFromExcel(order.prestashopData.dekoryRaw);
+                              const uniqueDekory = getUniqueDekory(excelDekory);
+                              const matched = order.dekorMatches || {};
+                              const allMatched = csvColors.length > 0 && csvColors.every(c => matched[c.key]);
+                              return (
+                                <div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
+                                    <div>
+                                      <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>CSV (kolory):</div>
+                                      {csvColors.map(c => (
+                                        <div key={c.key}
+                                          onDragOver={e => e.preventDefault()}
+                                          onDrop={e => {
+                                            e.preventDefault();
+                                            const dekorName = e.dataTransfer.getData('text/plain');
+                                            const newMatches = { ...(order.dekorMatches || {}), [c.key]: dekorName };
+                                            handleUpdateOrderField(order.id, 'dekorMatches', newMatches);
+                                          }}
+                                          style={{ background: matched[c.key] ? '#c8e6c9' : '#fff', border: '1px solid ' + (matched[c.key] ? '#4caf50' : '#ddd'), borderRadius: '4px', padding: '4px 6px', marginBottom: '3px', fontSize: '11px', minHeight: '28px' }}>
+                                          {matched[c.key]
+                                            ? <span>{c.name} <span style={{ color: '#4caf50' }}>✓ {matched[c.key]}</span> <button onClick={() => { const nm = { ...(order.dekorMatches || {}) }; delete nm[c.key]; handleUpdateOrderField(order.id, 'dekorMatches', nm); }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '10px' }}>✕</button></span>
+                                            : <span style={{ color: '#999' }}>{c.name} <span style={{ fontSize: '10px' }}>{c.surfaceArea} m²</span> ← upuść dekor</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div>
+                                      <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>Dekory z Excel:</div>
+                                      {uniqueDekory.filter(d => !Object.values(matched).includes(d.name)).map((d, i) => (
+                                        <div key={i} draggable
+                                          onDragStart={e => e.dataTransfer.setData('text/plain', d.name)}
+                                          style={{ background: '#e3f2fd', border: '1px solid #90caf9', borderRadius: '4px', padding: '4px 6px', marginBottom: '3px', fontSize: '11px', cursor: 'grab' }}>
+                                          {d.name} <span style={{ color: '#1976d2', fontSize: '10px' }}>{d.m2} m²</span>
+                                        </div>
+                                      ))}
+                                      {uniqueDekory.filter(d => !Object.values(matched).includes(d.name)).length === 0 && <span style={{ fontSize: '11px', color: '#4caf50' }}>Wszystkie przyporządkowane</span>}
+                                    </div>
+                                  </div>
+                                  {allMatched && (
+                                    <button className="btn btn-success" onClick={() => handleUpdateOrderField(order.id, 'colorChecked', true)} style={{ width: '100%', fontSize: '13px' }}>✅ Zatwierdź — kolory sprawdzone</button>
+                                  )}
+                                  {!allMatched && <p style={{ fontSize: '11px', color: '#e65100', margin: '4px 0 0' }}>Przeciągnij dekory z prawej na kolory CSV po lewej. Wymagane przed produkcją.</p>}
+                                </div>
+                              );
+                            })()}
+                            {!order.colorChecked && (!order.csvLoaded || !order.prestashopData?.dekoryRaw) && (
+                              <p style={{ fontSize: '11px', color: '#e65100', margin: '4px 0 0' }}>Pobierz CSV i załaduj zamówienie z dekorami aby sprawdzić kolory.</p>
+                            )}
                           </div>
 
-                          {/* 📎 LINKI DO AKCESORIÓW */}
-                          <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
-                            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📎 Pliki akcesoriów i produkcyjne:</div>
+                          {/* BLOK 1: AKCESORIA */}
+                          <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '8px', padding: '10px', marginBottom: '8px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📎 Akcesoria (raporty):</div>
                             {order.accessoryLinks ? (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                 {order.accessoryLinks.okucLink
@@ -2038,20 +2167,35 @@ export default function App() {
                                 {!order.accessoryLinks.okucLink && !order.accessoryLinks.ciecieLink && (
                                   <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>
                                 )}
-                                {order.accessoryLinks.aFile
-                                  ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#4a148c' }}>📁 A_{order.id}</a>
-                                  : null}
-                                {order.accessoryLinks.bFile
-                                  ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#4a148c' }}>📁 B_{order.id}</a>
-                                  : null}
-                                {canManagePS && (
-                                  <button className="btn" onClick={() => handleFetchAccessoryLinks(order.id)} disabled={isLoading} style={{ fontSize: '10px', padding: '2px 6px', marginTop: '4px' }}>🔄 Odśwież linki</button>
-                                )}
                               </div>
+                            ) : <span style={{ fontSize: '12px', color: '#aaa' }}>Brak danych — pobierz CSV</span>}
+                          </div>
+
+                          {/* BLOK 2: PLIKI PRODUKCYJNE A_ B_ */}
+                          <div style={{ background: '#e8eaf6', border: '1px solid #9fa8da', borderRadius: '8px', padding: '10px', marginBottom: '8px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>🗂️ Pliki produkcyjne:</div>
+                            {order.accessoryLinks ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                {order.accessoryLinks.aFile
+                                  ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#283593' }}>📁 A_{order.id}</a>
+                                  : <span style={{ fontSize: '12px', color: '#888' }}>Brak A_{order.id}</span>}
+                                {order.accessoryLinks.bFile
+                                  ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#283593' }}>📁 B_{order.id}</a>
+                                  : <span style={{ fontSize: '12px', color: '#888' }}>Brak B_{order.id}</span>}
+                              </div>
+                            ) : <span style={{ fontSize: '12px', color: '#aaa' }}>Brak danych — pobierz CSV</span>}
+                          </div>
+
+                          {/* BLOK 3: UPLOAD WŁASNY */}
+                          <div style={{ background: '#e0f2f1', border: '1px solid #80cbc4', borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📤 Dodaj plik produkcyjny:</div>
+                            {accessToken ? (
+                              <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, PRODUKCJA_FOLDER_ID); e.target.value = ''; }} style={{ fontSize: '12px' }} />
                             ) : (
-                              canManagePS
-                                ? <button className="btn btn-primary" onClick={() => handleFetchAccessoryLinks(order.id)} disabled={isLoading} style={{ fontSize: '12px' }}>🔍 Pobierz linki do plików</button>
-                                : <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>
+                              <button className="btn btn-primary" onClick={handleAuthorizeGoogle} style={{ fontSize: '12px' }}>🔐 Autoryzuj Drive</button>
+                            )}
+                            {canManagePS && order.csvLoaded && (
+                              <button className="btn" onClick={() => handleFetchAccessoryLinks(order.id)} disabled={isLoading} style={{ fontSize: '10px', padding: '2px 8px', marginTop: '6px', display: 'block' }}>🔄 Odśwież linki do plików</button>
                             )}
                           </div>
 
