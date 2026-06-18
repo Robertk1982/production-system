@@ -132,6 +132,12 @@ export default function App() {
   const [tkOrderNum, setTkOrderNum] = useState('');
   const [tkNote, setTkNote] = useState('');
   const [importingExcel, setImportingExcel] = useState(false);
+  const [psSortBy, setPsSortBy] = useState('id');
+  const [manualOrderId, setManualOrderId] = useState('');
+  const [manualDataRealizacji, setManualDataRealizacji] = useState('');
+  const [manualTransport, setManualTransport] = useState('');
+  const [manualWartosc, setManualWartosc] = useState('');
+  const [manualKodPocztowy, setManualKodPocztowy] = useState('');
   const [wydaneKanapka, setWydaneKanapka] = useState('');
 
   const historyEntry = (action) => ({
@@ -176,7 +182,7 @@ export default function App() {
 
     // Load orders
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
-      setOrders(snapshot.docs.map(d => ({ docId: d.id, ...d.data() })));
+      setOrders(snapshot.docs.map(d => ({ docId: d.id, ...d.data() })).filter(o => !o.deleted));
     });
 
     return () => {
@@ -912,7 +918,7 @@ export default function App() {
           await updateDoc(orderRef, {
             inPrestashop: true,
             prestashopData: {
-              dataDodania: row['Data dodania'] ? new Date(row['Data dodania']).toLocaleDateString('pl-PL') : '',
+              dataDodania: (() => { const d = row['Data dodania']; if (!d) return ''; if (d instanceof Date) return d.toLocaleDateString('pl-PL'); const s = String(d); return s.includes('-') ? s.substring(0,10).split('-').reverse().join('.') : s.substring(0,10); })(),
               dataRealizacji: String(row['Data Realizacji'] || ''),
               transport: String(row['Transport'] || ''),
               wartosc: String(row['Wartość zamówienia'] || ''),
@@ -926,11 +932,13 @@ export default function App() {
             problems: [], photoCount: 0, photoArchived: false,
             inPrestashop: true,
             prestashopData: {
-              dataDodania: row['Data dodania'] ? new Date(row['Data dodania']).toLocaleDateString('pl-PL') : '',
+              dataDodania: (() => { const d = row['Data dodania']; if (!d) return ''; if (d instanceof Date) return d.toLocaleDateString('pl-PL'); const s = String(d); return s.includes('-') ? s.substring(0,10).split('-').reverse().join('.') : s.substring(0,10); })(),
               dataRealizacji: String(row['Data Realizacji'] || ''),
               transport: String(row['Transport'] || ''),
               wartosc: String(row['Wartość zamówienia'] || ''),
-              kodPocztowy: String(row['Kod pocztowy klienta'] || '')
+              kodPocztowy: String(row['Kod pocztowy klienta'] || ''),
+              produkty: String(row['Produkty'] || ''),
+              dekoryRaw: String(row['Dekory'] || '')
             },
             history: [historyEntry('Import z Prestashop (Excel)')]
           });
@@ -1004,8 +1012,30 @@ export default function App() {
       if (order) {
         const orderRef = doc(db, 'orders', order.docId);
         const totalFormats = allCsvData.reduce((sum, c) => sum + c.rowCount, 0);
+        const hasNoDrilling = allCsvData.every(c => c.rows.every(r => !r.barcode1?.trim()));
+        const colorCountExclHdf = allCsvData.filter(c => !c.colorName.toLowerCase().includes('hdf')).length;
+
+        // Calculate surface area, edge banding, longest element per color
+        let longestElement = 0;
+        for (const color of allCsvData) {
+          let area = 0, edgeMeters = 0;
+          for (const r of color.rows) {
+            const l = parseFloat(r.length) || 0;
+            const w = parseFloat(r.width) || 0;
+            area += (l * w) / 1000000;
+            if (l > longestElement) longestElement = l;
+            if (w > longestElement) longestElement = w;
+            const qty = parseInt(r.qty) || 1;
+            if (r.edgeLong1) edgeMeters += (l * qty) / 1000;
+            if (r.edgeLong2) edgeMeters += (l * qty) / 1000;
+            if (r.edgeShort1) edgeMeters += (w * qty) / 1000;
+            if (r.edgeShort2) edgeMeters += (w * qty) / 1000;
+          }
+          color.surfaceArea = Math.round(area * 1000) / 1000;
+          color.edgeMeters = Math.round(edgeMeters * 100) / 100;
+        }
         await updateDoc(orderRef, {
-          csvData: allCsvData, csvLoaded: true, totalFormats,
+          csvData: allCsvData, csvLoaded: true, totalFormats, hasNoDrilling, colorCountExclHdf, longestElement,
           history: [...(order.history || []), historyEntry(`Pobrano ${allCsvData.length} plików CSV (${totalFormats} formatek)`)]
         });
         setUploadMessage(`✅ Pobrano ${allCsvData.length} kolorów, ${totalFormats} formatek`);
@@ -1020,7 +1050,109 @@ export default function App() {
     const d = order.prestashopData;
     if (!d.dataRealizacji || !d.transport || !d.wartosc || !d.kodPocztowy) return false;
     if (!order.paletaPrestashop) return false;
+    if (!order.csvLoaded) return false;
+    if (!order.sprawdzone) return false;
+    if (order.bledy && !order.poprawione) return false;
+    if (order.bledy && !order.sprawdzoneBledy) return false;
+    if (order.dekoryNeedCheck) return false;
     return true;
+  };
+
+  const parseDekoryFromExcel = (raw) => {
+    if (!raw || raw === 'nan' || raw === 'NaN') return [];
+    return raw.split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('---'))
+      .filter(line => !line.toLowerCase().includes('obr'))
+      .filter(line => !line.toLowerCase().includes('drążek'))
+      .filter(line => !line.toLowerCase().includes('wiór'))
+      .filter(line => !line.toLowerCase().includes('kkolor czarny'))
+      .filter(line => !line.includes('0 m²') && !line.includes('0 mb'))
+      .map(line => {
+        const name = line.replace(/\s*\(.*\)/, '').trim();
+        const m2Match = line.match(/([\d.,]+)\s*m²/);
+        const mbMatch = line.match(/([\d.,]+)\s*mb/);
+        return { name, m2: m2Match ? parseFloat(m2Match[1].replace(',','.')) : 0, mb: mbMatch ? parseFloat(mbMatch[1].replace(',','.')) : 0, type: line.includes('m²') ? 'dekor' : 'edge' };
+      })
+      .filter(d => d.type === 'dekor');
+  };
+
+  const getUniqueDekory = (dekoryList) => {
+    const seen = new Set();
+    return dekoryList.filter(d => {
+      const key = d.name.toLowerCase().replace('hdf bialy','hdf').replace('hdf biały','hdf');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const handleDeletePrestashop = async (orderId) => {
+    const pwd = window.prompt('Wpisz hasło aby usunąć:');
+    if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Nieprawidłowe hasło'); return; }
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, { inPrestashop: false, history: [...(order.history || []), historyEntry('Usunięto z Prestashop')] });
+    } catch (err) { alert('Błąd: ' + err.message); }
+  };
+
+  const handleManualPrestashopOrder = async () => {
+    if (!manualOrderId.trim()) { alert('Wpisz numer zamówienia'); return; }
+    try {
+      setIsLoading(true);
+      const existing = orders.find(o => o.id === manualOrderId && o.inPrestashop);
+      if (existing) { alert('Zamówienie już jest w Prestashop'); setIsLoading(false); return; }
+      const existingOrder = orders.find(o => o.id === manualOrderId);
+      const psData = { dataDodania: new Date().toLocaleDateString('pl-PL'), dataRealizacji: manualDataRealizacji, transport: manualTransport, wartosc: manualWartosc, kodPocztowy: manualKodPocztowy, produkty: '', dekoryRaw: '' };
+      if (existingOrder) {
+        await updateDoc(doc(db, 'orders', existingOrder.docId), { inPrestashop: true, prestashopData: psData, history: [...(existingOrder.history || []), historyEntry('Dodano ręcznie do Prestashop')] });
+      } else {
+        await addDoc(collection(db, 'orders'), { id: manualOrderId, status: 'none', createdAt: new Date().toISOString(), problems: [], photoCount: 0, photoArchived: false, inPrestashop: true, prestashopData: psData, history: [historyEntry('Dodano ręcznie do Prestashop')] });
+      }
+      setManualOrderId(''); setManualDataRealizacji(''); setManualTransport(''); setManualWartosc(''); setManualKodPocztowy('');
+    } catch (err) { alert('Błąd: ' + err.message); }
+    finally { setIsLoading(false); }
+  };
+
+  const handleClearAllOrders = async () => {
+    const pwd = window.prompt('UWAGA: Usunięcie WSZYSTKICH zamówień! Hasło:');
+    if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Hasło'); return; }
+    if (!window.confirm('OSTATNIE OSTRZEŻENIE! Usunąć wszystko?')) return;
+    try {
+      setIsLoading(true);
+      for (const order of orders) { await updateDoc(doc(db, 'orders', order.docId), { deleted: true }); }
+      alert('✅ Dane wyczyszczone');
+    } catch (err) { alert('Błąd: ' + err.message); }
+    finally { setIsLoading(false); }
+  };
+
+  const handleRedownloadCsv = async (orderId) => {
+    const pwd = window.prompt('Hasło do ponownego pobrania CSV:');
+    if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Hasło'); return; }
+    await handleLoadCsv(orderId);
+  };
+
+  const handleEditDataRealizacji = async (orderId) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+    if (order.prestashopData?.dataRealizacji) {
+      const pwd = window.prompt('Hasło do zmiany daty realizacji:');
+      if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Hasło'); return; }
+    }
+    setDateEditOrderId('ps_date_' + orderId);
+  };
+
+  const handleSavePsDate = async (orderId, newDate) => {
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      const newPs = { ...(order.prestashopData || {}), dataRealizacji: newDate };
+      await updateDoc(orderRef, { prestashopData: newPs, history: [...(order.history || []), historyEntry('Zmieniono datę realizacji: ' + newDate)] });
+      setDateEditOrderId(null);
+    } catch (err) { alert('Błąd: ' + err.message); }
   };
 
   const handleMoveToProduction = async (orderId) => {
@@ -1094,7 +1226,11 @@ export default function App() {
   const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByKanapka);
   const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
   const trudnyKlientOrders = orders.filter(o => o.trudnyKlient && !o.trudnyKlientArchived).sort(sortByNum);
-  const prestashopOrders = orders.filter(o => o.inPrestashop && !o.movedToProduction).sort(sortByNum);
+  const prestashopSorted = orders.filter(o => o.inPrestashop && !o.movedToProduction);
+  const prestashopOrders = psSortBy === 'date' ? prestashopSorted.sort((a,b) => (a.prestashopData?.dataRealizacji||'9999').localeCompare(b.prestashopData?.dataRealizacji||'9999'))
+    : psSortBy === 'value' ? prestashopSorted.sort((a,b) => parseFloat((a.prestashopData?.wartosc||'0').replace(',','.')) - parseFloat((b.prestashopData?.wartosc||'0').replace(',','.')))
+    : psSortBy === 'colors' ? prestashopSorted.sort((a,b) => (b.colorCountExclHdf||0) - (a.colorCountExclHdf||0))
+    : prestashopSorted.sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
 
@@ -1156,7 +1292,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v24</h2>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v24.1</h2>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1388,12 +1524,33 @@ export default function App() {
               <div>
                 <h2>🛒 Prestashop ({prestashopOrders.length})</h2>
 
+                <div style={{ display: 'flex', gap: '4px', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                  {['id','date','value','colors'].map(s => (
+                    <button key={s} className={`btn ${psSortBy === s ? 'btn-primary' : ''}`} onClick={() => setPsSortBy(s)} style={{ padding: '4px 10px', fontSize: '11px' }}>
+                      {s === 'id' ? '# Numer' : s === 'date' ? '📅 Data' : s === 'value' ? '💰 Wartość' : '🎨 Kolory'}
+                    </button>
+                  ))}
+                </div>
+
                 {canManagePS && (
-                  <div className="card">
-                    <h3>Import zamówień z Excel</h3>
-                    <input type="file" accept=".xlsx,.xls" onChange={e => { const f = e.target.files?.[0]; if (f) handleImportExcel(f); e.target.value = ''; }} disabled={importingExcel} style={{ marginBottom: '0.5rem' }} />
-                    {importingExcel && <p style={{ color: '#1976d2', fontSize: '12px' }}>⏳ Importowanie...</p>}
-                  </div>
+                  <>
+                    <div className="card">
+                      <h3>📥 Import z Excel</h3>
+                      <input type="file" accept=".xlsx,.xls" onChange={e => { const f = e.target.files?.[0]; if (f) handleImportExcel(f); e.target.value = ''; }} disabled={importingExcel} />
+                      {importingExcel && <p style={{ color: '#1976d2', fontSize: '12px' }}>⏳ Importowanie...</p>}
+                    </div>
+                    <div className="card">
+                      <h3>✏️ Dodaj ręcznie</h3>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+                        <input type="text" value={manualOrderId} onChange={e => setManualOrderId(e.target.value)} placeholder="Nr zamówienia" />
+                        <input type="date" value={manualDataRealizacji} onChange={e => setManualDataRealizacji(e.target.value)} />
+                        <input type="text" value={manualTransport} onChange={e => setManualTransport(e.target.value)} placeholder="Transport" />
+                        <input type="text" value={manualWartosc} onChange={e => setManualWartosc(e.target.value)} placeholder="Wartość" />
+                        <input type="text" value={manualKodPocztowy} onChange={e => setManualKodPocztowy(e.target.value)} placeholder="Kod pocztowy" />
+                        <button className="btn btn-success" onClick={handleManualPrestashopOrder} disabled={isLoading}>Dodaj</button>
+                      </div>
+                    </div>
+                  </>
                 )}
 
                 {uploadMessage && <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>{uploadMessage}</div>}
@@ -1402,72 +1559,98 @@ export default function App() {
                   <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
                 </div>
 
-                {prestashopOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
                 {prestashopOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
                   const ps = order.prestashopData || {};
                   return (
                     <React.Fragment key={order.docId}>
                       <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                              <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                              {ps.dataRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }} title="Data realizacji">📅 {ps.dataRealizacji}</span>}
-                              {order.paletaPrestashop && <span style={{ fontSize: '13px', background: '#e3f2fd', padding: '2px 6px', borderRadius: '4px' }} title="Paleta">🎨 {order.paletaPrestashop}</span>}
-                              {order.sprawdzone && <span style={{ fontSize: '14px' }} title="Sprawdzone">✅</span>}
-                              {order.bledy && <span style={{ fontSize: '14px' }} title="Błędy">❌</span>}
-                              {order.poprawione && <span style={{ fontSize: '14px' }} title="Poprawione">🔧</span>}
-                              {order.csvLoaded && <span style={{ fontSize: '13px', background: '#e8f5e9', padding: '2px 6px', borderRadius: '4px' }} title="CSV pobrane">📄 {order.csvData?.length || 0} kolorów</span>}
-                              {order.csvData?.some(c => c.isThickened) && <span style={{ fontSize: '14px', background: '#fff3cd', padding: '2px 6px', borderRadius: '4px' }} title="Pogrubienie">🔲 pogr.</span>}
-                              {order.csvData?.some(c => c.isCountertop) && <span style={{ fontSize: '14px', background: '#fce4ec', padding: '2px 6px', borderRadius: '4px' }} title="Blat kuchenny">🍳 blat</span>}
-                              {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
-                            </div>
-                            <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
-                              {ps.transport && <span style={{ marginRight: '8px' }}>{ps.transport.substring(0, 50)}{ps.transport.length > 50 ? '...' : ''}</span>}
-                              {ps.wartosc && <span style={{ fontWeight: 'bold' }}>💰 {ps.wartosc} zł</span>}
-                            </div>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                            {ps.dataRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold' }}>📅 {ps.dataRealizacji}</span>}
+                            {order.paletaPrestashop && <span style={{ fontSize: '12px', background: '#e3f2fd', padding: '2px 6px', borderRadius: '4px' }}>🎨 {order.paletaPrestashop}</span>}
+                            {order.hasNoDrilling && <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#ff6f00', background: '#fff8e1', padding: '2px 8px', borderRadius: '4px' }}>⚠️ BRAK NAWIERTÓW</span>}
+                            {order.dekoryNeedCheck && <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>🔍 SPRAWDŹ DEKORY</span>}
+                            {order.zaprojektowane && <span style={{ fontSize: '13px' }} title="Zaprojektowane">📐</span>}
+                            {order.sprawdzone && <span style={{ fontSize: '13px' }} title="Sprawdzone">✅</span>}
+                            {order.bledy && <span style={{ fontSize: '13px' }} title="Błędy">❌</span>}
+                            {order.poprawione && <span style={{ fontSize: '13px' }} title="Poprawione">🔧</span>}
+                            {order.csvLoaded && <span style={{ fontSize: '12px', background: '#e8f5e9', padding: '2px 6px', borderRadius: '4px' }}>📄 {order.colorCountExclHdf || order.csvData?.length || 0} kol.</span>}
+                            {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
                           </div>
-                          <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
+                          <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
+                            {ps.transport && <span>{ps.transport.substring(0, 40)}{ps.transport.length > 40 ? '...' : ''}</span>}
+                            {ps.wartosc && <span style={{ marginLeft: '8px', fontWeight: 'bold' }}>💰 {ps.wartosc} zł</span>}
+                          </div>
                         </div>
                       </div>
 
                       {selectedOrderId === order.id && (
                         <div className="card" style={{ borderLeft: '3px solid #2196F3' }}>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '1rem', fontSize: '13px' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '1rem', fontSize: '13px' }}>
                             <div><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
-                            <div><strong>Data realizacji:</strong> {ps.dataRealizacji || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
+                            <div>
+                              <strong>Data realizacji:</strong>{' '}
+                              {dateEditOrderId === 'ps_date_' + order.id ? (
+                                <span><input type="date" defaultValue={ps.dataRealizacji || ''} onChange={e => handleSavePsDate(order.id, e.target.value)} style={{ padding: '2px' }} /> <button className="btn" onClick={() => setDateEditOrderId(null)} style={{ padding: '2px 6px', fontSize: '10px' }}>✕</button></span>
+                              ) : ps.dataRealizacji ? (
+                                <span>{ps.dataRealizacji} <button className="btn" onClick={() => handleEditDataRealizacji(order.id)} style={{ padding: '1px 6px', fontSize: '10px' }}>🔒</button></span>
+                              ) : (
+                                <span style={{ color: '#f44336' }}><button className="btn btn-primary" onClick={() => setDateEditOrderId('ps_date_' + order.id)} style={{ padding: '2px 8px', fontSize: '11px' }}>📅 Ustaw datę</button></span>
+                              )}
+                            </div>
                             <div><strong>Transport:</strong> {ps.transport || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
                             <div><strong>Wartość:</strong> {ps.wartosc || <span style={{ color: '#f44336' }}>⚠️ brak</span>} zł</div>
                             <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
                             <div><strong>Formatki:</strong> {order.totalFormats || '—'}</div>
                           </div>
 
-                          {order.csvData && order.csvData.length > 0 && (
-                            <div style={{ marginBottom: '1rem', background: '#f5f5f5', padding: '8px', borderRadius: '4px' }}>
-                              <p style={{ fontSize: '12px', fontWeight: 'bold', margin: '0 0 4px 0' }}>📄 Kolory ({order.csvData.length}):</p>
-                              {order.csvData.map((c, i) => (
-                                <div key={i} style={{ fontSize: '12px', display: 'flex', gap: '8px', padding: '2px 0' }}>
-                                  <span style={{ fontWeight: 'bold' }}>{c.colorName}</span>
-                                  <span>{c.rowCount} formatek</span>
-                                  {c.isThickened && <span style={{ background: '#fff3cd', padding: '0 4px', borderRadius: '2px' }}>pogr.</span>}
-                                  {c.isCountertop && <span style={{ background: '#fce4ec', padding: '0 4px', borderRadius: '2px' }}>blat</span>}
-                                </div>
-                              ))}
-                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginTop: '4px', borderTop: '1px solid #ddd', paddingTop: '4px' }}>Razem: {order.totalFormats} formatek</div>
+                          {order.longestElement > 0 && (
+                            <div style={{ background: '#e3f2fd', padding: '8px', borderRadius: '4px', marginBottom: '1rem', fontSize: '14px', fontWeight: 'bold' }}>
+                              📏 Najdłuższy element: {order.longestElement} mm
                             </div>
                           )}
 
-                          <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem', flexWrap: 'wrap' }}>
-                            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <input type="checkbox" checked={order.sprawdzone || false} onChange={() => canManagePS && handleUpdateOrderField(order.id, 'sprawdzone', !(order.sprawdzone || false))} disabled={!canManagePS} /> Sprawdzone
-                            </label>
-                            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <input type="checkbox" checked={order.bledy || false} onChange={() => canManagePS && handleUpdateOrderField(order.id, 'bledy', !(order.bledy || false))} disabled={!canManagePS} /> Błędy
-                            </label>
-                            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <input type="checkbox" checked={order.poprawione || false} onChange={() => canPoprawione && handleUpdateOrderField(order.id, 'poprawione', !(order.poprawione || false))} disabled={!canPoprawione} /> Poprawione
-                            </label>
-                          </div>
+                          {order.hasNoDrilling && (
+                            <div style={{ background: '#fff8e1', border: '2px solid #ff6f00', padding: '12px', borderRadius: '8px', marginBottom: '1rem', fontSize: '18px', fontWeight: 'bold', color: '#ff6f00', textAlign: 'center' }}>
+                              ⚠️ BRAK NAWIERTÓW
+                            </div>
+                          )}
+
+                          {order.csvData && order.csvData.length > 0 && (
+                            <div style={{ marginBottom: '1rem' }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                <thead><tr style={{ background: '#f5f5f5' }}>
+                                  <th style={{ padding: '6px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Kolor</th>
+                                  <th style={{ padding: '6px', textAlign: 'right', borderBottom: '2px solid #ddd' }}>Formatki</th>
+                                  <th style={{ padding: '6px', textAlign: 'right', borderBottom: '2px solid #ddd' }}>m²</th>
+                                  <th style={{ padding: '6px', textAlign: 'right', borderBottom: '2px solid #ddd' }}>Okleinowanie MB</th>
+                                  <th style={{ padding: '6px', textAlign: 'center', borderBottom: '2px solid #ddd' }}>Info</th>
+                                </tr></thead>
+                                <tbody>
+                                  {order.csvData.map((c, i) => (
+                                    <tr key={i} style={{ borderBottom: '1px solid #eee' }}>
+                                      <td style={{ padding: '4px 6px', fontWeight: 'bold' }}>{c.colorName}</td>
+                                      <td style={{ padding: '4px 6px', textAlign: 'right' }}>{c.rowCount}</td>
+                                      <td style={{ padding: '4px 6px', textAlign: 'right' }}>{c.surfaceArea} m²</td>
+                                      <td style={{ padding: '4px 6px', textAlign: 'right' }}>{c.edgeMeters} mb</td>
+                                      <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                                        {c.isThickened && <span title="Pogrubienie">🔲</span>}
+                                        {c.isCountertop && <span title="Blat">🍳</span>}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  <tr style={{ fontWeight: 'bold', background: '#f5f5f5' }}>
+                                    <td style={{ padding: '6px' }}>RAZEM</td>
+                                    <td style={{ padding: '6px', textAlign: 'right' }}>{order.totalFormats}</td>
+                                    <td style={{ padding: '6px', textAlign: 'right' }}>{order.csvData.reduce((s,c) => s + (c.surfaceArea||0), 0).toFixed(3)} m²</td>
+                                    <td style={{ padding: '6px', textAlign: 'right' }}>{order.csvData.reduce((s,c) => s + (c.edgeMeters||0), 0).toFixed(2)} mb</td>
+                                    <td></td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
 
                           <div style={{ marginBottom: '1rem' }}>
                             <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🎨 Paleta:</label>
@@ -1476,25 +1659,57 @@ export default function App() {
                                 <option value="">-- wybierz --</option>
                                 {PALETA_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
                               </select>
-                            ) : (
-                              <span>{order.paletaPrestashop || '—'}</span>
+                            ) : <span>{order.paletaPrestashop || '—'}</span>}
+                          </div>
+
+                          <div style={{ display: 'flex', gap: '12px', marginBottom: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                            <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <input type="checkbox" checked={order.zaprojektowane || false} onChange={() => canPoprawione && handleUpdateOrderField(order.id, 'zaprojektowane', !(order.zaprojektowane || false))} disabled={!canPoprawione} /> Zaprojektowane
+                            </label>
+                            <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <input type="checkbox" checked={order.sprawdzone || false} onChange={() => canManagePS && handleUpdateOrderField(order.id, 'sprawdzone', !(order.sprawdzone || false))} disabled={!canManagePS} /> Sprawdzone
+                            </label>
+                            <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', color: order.bledy ? '#c62828' : 'inherit' }}>
+                              <input type="checkbox" checked={order.bledy || false} onChange={() => canManagePS && handleUpdateOrderField(order.id, 'bledy', !(order.bledy || false))} disabled={!canManagePS} /> Błędy
+                            </label>
+                            {order.bledy && (
+                              <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <input type="checkbox" checked={order.poprawione || false} onChange={() => canPoprawione && handleUpdateOrderField(order.id, 'poprawione', !(order.poprawione || false))} disabled={!canPoprawione} /> Poprawione
+                              </label>
+                            )}
+                            {order.bledy && order.poprawione && (
+                              <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <input type="checkbox" checked={order.sprawdzoneBledy || false} onChange={() => canManagePS && handleUpdateOrderField(order.id, 'sprawdzoneBledy', !(order.sprawdzoneBledy || false))} disabled={!canManagePS} /> Sprawdzone błędy
+                              </label>
                             )}
                           </div>
+
+                          {order.bledy && (
+                            <div style={{ marginBottom: '1rem' }}>
+                              <textarea value={order.opisBledu || ''} onChange={e => handleUpdateOrderField(order.id, 'opisBledu', e.target.value)} placeholder="Opis błędów..." style={{ width: '100%', height: '50px', borderColor: '#f44336' }} />
+                            </div>
+                          )}
 
                           <div style={{ marginBottom: '1rem' }}>
                             <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Uwagi:</label>
                             <textarea value={order.prestashopUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'prestashopUwagi', e.target.value)} placeholder="Uwagi..." style={{ width: '100%', height: '50px' }} />
                           </div>
 
-                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                             {canManagePS && !order.csvLoaded && (
                               <button className="btn btn-primary" onClick={() => handleLoadCsv(order.id)} disabled={isLoading} style={{ flex: 1 }}>📄 Pobierz CSV z Drive</button>
                             )}
+                            {canManagePS && order.csvLoaded && (
+                              <button className="btn" onClick={() => handleRedownloadCsv(order.id)} disabled={isLoading} style={{ fontSize: '11px' }}>🔄 Pobierz ponownie CSV</button>
+                            )}
                             {canManagePS && (
-                              <button className="btn btn-success" onClick={() => handleMoveToProduction(order.id)} disabled={isLoading || !canMoveToProduction(order)} style={{ flex: 1 }} title={!canMoveToProduction(order) ? 'Uzupełnij brakujące dane i wybierz paletę' : ''}>🏭 Na produkcję</button>
+                              <button className="btn btn-success" onClick={() => handleMoveToProduction(order.id)} disabled={isLoading || !canMoveToProduction(order)} style={{ flex: 1 }}>🏭 Na produkcję</button>
+                            )}
+                            {canManagePS && (
+                              <button className="btn btn-danger" onClick={() => handleDeletePrestashop(order.id)} disabled={isLoading} style={{ padding: '8px 12px' }}>🗑️</button>
                             )}
                           </div>
-                          {!canMoveToProduction(order) && <p style={{ fontSize: '11px', color: '#f44336', marginTop: '4px' }}>⚠️ Uzupełnij brakujące dane i wybierz paletę aby przenieść</p>}
+                          {!canMoveToProduction(order) && <p style={{ fontSize: '11px', color: '#999', marginTop: '4px' }}>Wymagane: data, transport, wartość, kod pocztowy, paleta, CSV, sprawdzone{order.bledy ? ', poprawione, sprawdzone błędy' : ''}{order.dekoryNeedCheck ? ', dekory' : ''}</p>}
                         </div>
                       )}
                     </React.Fragment>
@@ -2088,6 +2303,12 @@ export default function App() {
           {activeTab === 'admin' && (
             <div>
               <h2>⚙️ Administracja</h2>
+
+              <div className="card" style={{ background: '#ffebee' }}>
+                <h3 style={{ color: '#c62828' }}>🗑️ Czyszczenie danych testowych</h3>
+                <p style={{ fontSize: '12px', color: '#666' }}>Usuwa WSZYSTKIE zamówienia z systemu. Hasło: FlexM</p>
+                <button className="btn btn-danger" onClick={handleClearAllOrders} disabled={isLoading} style={{ width: '100%' }}>🗑️ Wyczyść wszystkie zamówienia</button>
+              </div>
 
               <div className="card">
                 <h3>Dodaj użytkownika</h3>
