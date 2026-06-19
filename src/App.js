@@ -614,6 +614,20 @@ export default function App() {
   };
 
   const handleUpdateOrderField = async (orderId, field, value) => {
+    // Gdy zatwierdzamy kolory — kasuj też dekoryNeedCheck
+    if (field === 'colorChecked' && value === true) {
+      try {
+        const order = orders.find(o => o.id === orderId);
+        if (!order) return;
+        const orderRef = doc(db, 'orders', order.docId);
+        await updateDoc(orderRef, {
+          colorChecked: true,
+          dekoryNeedCheck: false,
+          history: [...(order.history || []), historyEntry('Kolory sprawdzone — dekory zatwierdzone')]
+        });
+      } catch (err) { alert('Blad: ' + err.message); }
+      return;
+    }
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
@@ -1190,8 +1204,8 @@ export default function App() {
     if (!order.sprawdzone) return false;
     if (order.bledy && !order.poprawione) return false;
     if (order.bledy && !order.sprawdzoneBledy) return false;
-    if (order.dekoryNeedCheck) return false;
-    // BLOKADA: kolory muszą być sprawdzone (colorChecked = true)
+    // dekoryNeedCheck blokuje TYLKO gdy colorChecked nie jest jeszcze true
+    if (order.dekoryNeedCheck && !order.colorChecked) return false;
     if (!order.colorChecked) return false;
     return true;
   };
@@ -1993,7 +2007,22 @@ export default function App() {
                             </div>
                             <div><strong>Transport:</strong> {ps.transport || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
                             <div><strong>Wartość:</strong> {ps.wartosc || <span style={{ color: '#f44336' }}>⚠️ brak</span>} zł</div>
-                            <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy || <span style={{ color: '#f44336' }}>⚠️ brak</span>}</div>
+                            <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy
+                              ? <span>{ps.kodPocztowy} <button className="btn" onClick={() => {
+                                  const v = window.prompt('Nowy kod pocztowy:', ps.kodPocztowy || '');
+                                  if (v !== null && v.trim()) {
+                                    const newPs = { ...(order.prestashopData || {}), kodPocztowy: v.trim() };
+                                    handleUpdateOrderField(order.id, 'prestashopData', newPs);
+                                  }
+                                }} style={{ fontSize: '10px', padding: '1px 5px' }}>✏️</button></span>
+                              : <span><span style={{ color: '#f44336' }}>⚠️ brak </span><button className="btn btn-primary" onClick={() => {
+                                  const v = window.prompt('Wpisz kod pocztowy:');
+                                  if (v !== null && v.trim()) {
+                                    const newPs = { ...(order.prestashopData || {}), kodPocztowy: v.trim() };
+                                    handleUpdateOrderField(order.id, 'prestashopData', newPs);
+                                  }
+                                }} style={{ fontSize: '10px', padding: '2px 8px' }}>+ Dodaj</button></span>
+                            }</div>
                             <div><strong>Formatki:</strong> {order.totalFormats || '—'}</div>
                           </div>
 
@@ -2095,56 +2124,68 @@ export default function App() {
                                 <button className="btn" onClick={() => handleUpdateOrderField(order.id, 'colorChecked', false)} style={{ fontSize: '11px', padding: '2px 8px', borderColor: '#f44336', color: '#f44336' }}>Cofnij</button>
                               )}
                             </div>
-                            {!order.colorChecked && order.csvLoaded && order.prestashopData?.dekoryRaw && (() => {
-                              const csvColors = (order.csvData || [])
-                                .filter(c => !c.colorName.toLowerCase().includes('hdf'))
-                                .filter(c => (c.surfaceArea || 0) > 0)
-                                .map(c => {
-                                  let name = c.colorName;
-                                  if (c.isCountertop) name = 'blat_' + name;
-                                  return { key: c.fileName, name, surfaceArea: c.surfaceArea };
-                                });
-                              const excelDekory = parseDekoryFromExcel(order.prestashopData.dekoryRaw);
+                            {!order.colorChecked && order.csvLoaded && (() => {
+                              // Wszystkie kolory z CSV (łącznie z HDF)
+                              const csvColors = (order.csvData || []).map(c => {
+                                let name = c.colorName;
+                                if (c.isCountertop) name = 'blat_' + name;
+                                return { key: c.fileName, name, surfaceArea: c.surfaceArea || 0 };
+                              });
+                              const excelDekory = order.prestashopData?.dekoryRaw ? parseDekoryFromExcel(order.prestashopData.dekoryRaw) : [];
                               const uniqueDekory = getUniqueDekory(excelDekory);
                               const matched = order.dekorMatches || {};
-                              const allMatched = csvColors.length > 0 && csvColors.every(c => matched[c.key]);
+                              const matchedValues = Object.values(matched);
+                              const allCsvMatched = csvColors.length > 0 && csvColors.every(c => matched[c.key]);
+
+                              const removeFromCsv = (key) => {
+                                const nm = { ...(order.dekorMatches || {}) };
+                                delete nm[key];
+                                handleUpdateOrderField(order.id, 'dekorMatches', nm);
+                              };
+                              const removeFromExcel = (dekorName) => {
+                                const nm = { ...(order.dekorMatches || {}) };
+                                Object.keys(nm).forEach(k => { if (nm[k] === dekorName) delete nm[k]; });
+                                handleUpdateOrderField(order.id, 'dekorMatches', nm);
+                              };
+
                               return (
                                 <div>
+                                  <p style={{ fontSize: '11px', color: '#555', margin: '0 0 6px' }}>Przeciągnij dekor z prawej na kolor CSV po lewej. Prawy klik = usuń powiązanie.</p>
                                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
                                     <div>
                                       <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>CSV (kolory):</div>
                                       {csvColors.map(c => (
                                         <div key={c.key}
                                           onDragOver={e => e.preventDefault()}
-                                          onDrop={e => {
-                                            e.preventDefault();
-                                            const dekorName = e.dataTransfer.getData('text/plain');
-                                            const newMatches = { ...(order.dekorMatches || {}), [c.key]: dekorName };
-                                            handleUpdateOrderField(order.id, 'dekorMatches', newMatches);
-                                          }}
-                                          style={{ background: matched[c.key] ? '#c8e6c9' : '#fff', border: '1px solid ' + (matched[c.key] ? '#4caf50' : '#ddd'), borderRadius: '4px', padding: '4px 6px', marginBottom: '3px', fontSize: '11px', minHeight: '28px' }}>
+                                          onDrop={e => { e.preventDefault(); const dn = e.dataTransfer.getData('text/plain'); const nm = { ...(order.dekorMatches || {}), [c.key]: dn }; handleUpdateOrderField(order.id, 'dekorMatches', nm); }}
+                                          onContextMenu={e => { e.preventDefault(); if (matched[c.key] && window.confirm('Usunac powiazanie ' + c.name + '?')) removeFromCsv(c.key); }}
+                                          style={{ background: matched[c.key] ? '#c8e6c9' : '#fff8e1', border: '1px solid ' + (matched[c.key] ? '#4caf50' : '#ffcc02'), borderRadius: '4px', padding: '4px 6px', marginBottom: '3px', fontSize: '11px', minHeight: '28px', cursor: matched[c.key] ? 'context-menu' : 'default' }}>
                                           {matched[c.key]
-                                            ? <span>{c.name} <span style={{ color: '#4caf50' }}>✓ {matched[c.key]}</span> <button onClick={() => { const nm = { ...(order.dekorMatches || {}) }; delete nm[c.key]; handleUpdateOrderField(order.id, 'dekorMatches', nm); }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '10px' }}>✕</button></span>
-                                            : <span style={{ color: '#999' }}>{c.name} <span style={{ fontSize: '10px' }}>{c.surfaceArea} m²</span> ← upuść dekor</span>}
+                                            ? <span>{c.name} <span style={{ color: '#4caf50', fontSize: '10px' }}>✓ {matched[c.key]}</span> <button onClick={() => removeFromCsv(c.key)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '11px', marginLeft: '2px' }}>✕</button></span>
+                                            : <span style={{ color: '#888' }}>{c.name}{c.surfaceArea > 0 ? ' (' + c.surfaceArea + ' m²)' : ''} <span style={{ fontSize: '9px' }}>← upuść</span></span>}
                                         </div>
                                       ))}
                                     </div>
                                     <div>
                                       <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>Dekory z Excel:</div>
-                                      {uniqueDekory.filter(d => !Object.values(matched).includes(d.name)).map((d, i) => (
-                                        <div key={i} draggable
-                                          onDragStart={e => e.dataTransfer.setData('text/plain', d.name)}
-                                          style={{ background: '#e3f2fd', border: '1px solid #90caf9', borderRadius: '4px', padding: '4px 6px', marginBottom: '3px', fontSize: '11px', cursor: 'grab' }}>
-                                          {d.name} <span style={{ color: '#1976d2', fontSize: '10px' }}>{d.m2} m²</span>
-                                        </div>
-                                      ))}
-                                      {uniqueDekory.filter(d => !Object.values(matched).includes(d.name)).length === 0 && <span style={{ fontSize: '11px', color: '#4caf50' }}>Wszystkie przyporządkowane</span>}
+                                      {uniqueDekory.map((d, i) => {
+                                        const isUsed = matchedValues.includes(d.name);
+                                        return (
+                                          <div key={i} draggable={!isUsed}
+                                            onDragStart={e => { if (!isUsed) e.dataTransfer.setData('text/plain', d.name); }}
+                                            onContextMenu={e => { e.preventDefault(); if (isUsed && window.confirm('Usunac powiazanie dekoru ' + d.name + '?')) removeFromExcel(d.name); }}
+                                            style={{ background: isUsed ? '#e8f5e9' : '#e3f2fd', border: '1px solid ' + (isUsed ? '#a5d6a7' : '#90caf9'), borderRadius: '4px', padding: '4px 6px', marginBottom: '3px', fontSize: '11px', cursor: isUsed ? 'context-menu' : 'grab', opacity: isUsed ? 0.6 : 1 }}>
+                                            {d.name} <span style={{ color: isUsed ? '#4caf50' : '#1976d2', fontSize: '10px' }}>{isUsed ? '✓' : d.m2 + ' m²'}</span>
+                                            {isUsed && <button onClick={() => removeFromExcel(d.name)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '11px', marginLeft: '2px' }}>✕</button>}
+                                          </div>
+                                        );
+                                      })}
+                                      {uniqueDekory.length === 0 && <span style={{ fontSize: '11px', color: '#888' }}>Brak dekorów w zamówieniu (import Excel bez kolumny Dekory)</span>}
                                     </div>
                                   </div>
-                                  {allMatched && (
-                                    <button className="btn btn-success" onClick={() => handleUpdateOrderField(order.id, 'colorChecked', true)} style={{ width: '100%', fontSize: '13px' }}>✅ Zatwierdź — kolory sprawdzone</button>
-                                  )}
-                                  {!allMatched && <p style={{ fontSize: '11px', color: '#e65100', margin: '4px 0 0' }}>Przeciągnij dekory z prawej na kolory CSV po lewej. Wymagane przed produkcją.</p>}
+                                  <button className="btn btn-success" onClick={() => handleUpdateOrderField(order.id, 'colorChecked', true)} style={{ width: '100%', fontSize: '13px' }}>
+                                    {allCsvMatched ? '✅ Zatwierdź — kolory sprawdzone' : '✅ Zatwierdź mimo niesparowanych'}
+                                  </button>
                                 </div>
                               );
                             })()}
@@ -2186,13 +2227,23 @@ export default function App() {
                             ) : <span style={{ fontSize: '12px', color: '#aaa' }}>Brak danych — pobierz CSV</span>}
                           </div>
 
-                          {/* BLOK 3: UPLOAD WŁASNY */}
+                          {/* BLOK 3: UPLOAD WŁASNY + lista dodanych */}
                           <div style={{ background: '#e0f2f1', border: '1px solid #80cbc4', borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
                             <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📤 Dodaj plik produkcyjny:</div>
                             {accessToken ? (
                               <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, PRODUKCJA_FOLDER_ID); e.target.value = ''; }} style={{ fontSize: '12px' }} />
                             ) : (
                               <button className="btn btn-primary" onClick={handleAuthorizeGoogle} style={{ fontSize: '12px' }}>🔐 Autoryzuj Drive</button>
+                            )}
+                            {(order.attachments || []).length > 0 && (
+                              <div style={{ marginTop: '6px' }}>
+                                {(order.attachments || []).map((att, idx) => (
+                                  <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', padding: '4px 8px', borderRadius: '4px', marginBottom: '3px', fontSize: '11px' }}>
+                                    <a href={att.driveLink || '#'} target="_blank" rel="noopener noreferrer" style={{ color: '#00695c' }}>📄 {att.name}</a>
+                                    {canManagePS && <button onClick={() => handleDeleteAttachment(order.id, idx)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '11px' }}>✕</button>}
+                                  </div>
+                                ))}
+                              </div>
                             )}
                             {canManagePS && order.csvLoaded && (
                               <button className="btn" onClick={() => handleFetchAccessoryLinks(order.id)} disabled={isLoading} style={{ fontSize: '10px', padding: '2px 8px', marginTop: '6px', display: 'block' }}>🔄 Odśwież linki do plików</button>
