@@ -1449,9 +1449,9 @@ export default function App() {
   };
 
   const handleCofnijDoPrestashop = async (orderId) => {
-    const pwd = window.prompt('Podaj hasło aby cofnąć zamówienie do Prestashop:');
-    if (pwd !== 'FlexM') { alert('Nieprawidłowe hasło.'); return; }
     if (!window.confirm('Czy na pewno cofnąć zamówienie #' + orderId + ' do Prestashop? Będzie można je edytować.')) return;
+    const pwd = window.prompt('Podaj hasło:');
+    if (pwd !== 'FlexM') { alert('Nieprawidłowe hasło.'); return; }
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
@@ -1532,8 +1532,7 @@ export default function App() {
   const trudnyKlientOrders = orders.filter(o => o.trudnyKlient && !o.trudnyKlientArchived).sort(sortByNum);
   const prestashopSorted = orders.filter(o => o.inPrestashop && !o.movedToProduction);
   const wydaneNaProdukcjeOrders = orders.filter(o => o.wydaneNaProdukcje).sort(sortByKanapka);
-  const planowanieOrders = orders.filter(o => o.wydaneNaProdukcje).sort((a, b) => {
-    // Niespakowane na górze, spakowane na dole
+  const planowanieOrders = orders.filter(o => o.inPlanowanie && !o.planowanieArchived).sort((a, b) => {
     const aSpak = (a.spakowane || false) ? 1 : 0;
     const bSpak = (b.spakowane || false) ? 1 : 0;
     if (aSpak !== bSpak) return aSpak - bSpak;
@@ -1606,7 +1605,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.3</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.5</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1668,15 +1667,29 @@ export default function App() {
                       </div>
                       {selectedOrderId === order.id && (
                         <div className="card" style={{ borderLeft: '3px solid #4caf50' }}>
-                          <div style={{ fontSize: '13px', marginBottom: '8px' }}>
-                            <strong>Wydano:</strong> {order.wydaneNaProdukcjeAt ? new Date(order.wydaneNaProdukcjeAt).toLocaleString('pl-PL') : '—'}
-                            {' '}przez <strong>{order.wydaneNaProdukcjeBy || '?'}</strong>
+                          {/* INFO: pełne dane z Prestashop — tylko podgląd */}
+                          <div style={{ background: '#f9f9f9', borderRadius: '6px', padding: '10px', marginBottom: '10px', fontSize: '13px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px' }}>
+                              <div><strong>Nr zamówienia:</strong> {order.id}</div>
+                              <div><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
+                              <div><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
+                              <div><strong>Transport:</strong> {ps.transport || '—'}</div>
+                              <div><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
+                              <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy || '—'}</div>
+                              <div><strong>Paleta:</strong> {order.paletaPrestashop || '—'}</div>
+                              <div><strong>Formatki:</strong> {order.totalFormats || '—'}</div>
+                              {order.longestElement > 0 && <div><strong>Najdłuższy el.:</strong> {order.longestElement} mm</div>}
+                              {order.colorCountExclHdf > 0 && <div><strong>Kolory (bez HDF):</strong> {order.colorCountExclHdf}</div>}
+                              {order.brakAkcesoriow && <div style={{ gridColumn: '1/-1', color: '#c62828' }}><strong>❌ Brak akcesoriów — potwierdzone</strong></div>}
+                              {order.trudnyKlient && <div style={{ gridColumn: '1/-1', color: '#c62828' }}><strong>⚠️ Trudny klient</strong></div>}
+                            </div>
+                            {ps.uwagi && <div style={{ marginTop: '6px' }}><strong>Uwagi:</strong> {ps.uwagi}</div>}
+                            <div style={{ marginTop: '6px', fontSize: '11px', color: '#999' }}>
+                              Wydano: {order.wydaneNaProdukcjeAt ? new Date(order.wydaneNaProdukcjeAt).toLocaleString('pl-PL') : '—'} przez {order.wydaneNaProdukcjeBy || '?'}
+                            </div>
                           </div>
-                          <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Transport:</strong> {ps.transport || '—'}</div>
-                          <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
-                          <div style={{ fontSize: '13px', marginBottom: '8px' }}><strong>Paleta:</strong> {order.paletaPrestashop || '—'}</div>
 
-                          {/* Kanapka + pozycja */}
+                          {/* Kanapka + pozycja — edytowalne tylko tutaj */}
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
                             <div>
                               <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '2px' }}>🥪 Numer kanapki:</label>
@@ -1692,10 +1705,10 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Linki do akcesoriów */}
-                          {order.accessoryLinks && (
+                          {/* Akcesoria (raporty) */}
+                          {order.accessoryLinks && (order.accessoryLinks.okucLink || order.accessoryLinks.ciecieLink) && (
                             <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
-                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Akcesoria:</div>
+                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Akcesoria (raporty):</div>
                               {order.accessoryLinks.okucLink ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a> : null}
                               {order.accessoryLinks.ciecieLink ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a> : null}
                             </div>
@@ -1972,7 +1985,8 @@ export default function App() {
                           {order.accessoryLinks?.okucLink && <span style={{ fontSize: '12px', color: '#7b1fa2' }}>📄</span>}
                         </div>
                         <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
-                          {ps.transport && <span>{ps.transport.substring(0, 45)}{ps.transport.length > 45 ? '...' : ''}</span>}
+                          {ps.dataDodania && <span style={{ marginRight: '8px' }}>📅 {ps.dataDodania}</span>}
+                          {ps.transport && <span>{ps.transport.substring(0, 40)}{ps.transport.length > 40 ? '...' : ''}</span>}
                         </div>
                         <div style={{ display: 'flex', gap: '8px', fontSize: '13px', marginTop: '2px' }}>
                           {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>✅ złożone</span>}
@@ -3231,7 +3245,7 @@ export default function App() {
                 <h3>Dodaj użytkownika</h3>
                 <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} placeholder="Imię i nazwisko" style={{ width: '100%', marginBottom: '0.5rem' }} />
                 <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '0.5rem' }} />
-                <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '0.75rem' }} />
+                <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} placeholder="Hasło" autoComplete="new-password" style={{ width: '100%', marginBottom: '0.75rem' }} />
                 <p style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '0.5rem' }}>Dostęp do katalogów:</p>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginBottom: '1rem' }}>
                   {ACCESS_FOLDERS.map(f => (
