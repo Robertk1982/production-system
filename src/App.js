@@ -137,6 +137,11 @@ export default function App() {
   const [tkNote, setTkNote] = useState('');
   const [importingExcel, setImportingExcel] = useState(false);
   const [psSortBy, setPsSortBy] = useState('id');
+  const [psFilterZaproj, setPsFilterZaproj] = useState(false);
+  const [psFilterSprawdzone, setPsFilterSprawdzone] = useState(false);
+  const [psFilterBledy, setPsFilterBledy] = useState(false);
+  const [psFilterDekor, setPsFilterDekor] = useState('');
+  const [psFilterKodPoczt, setPsFilterKodPoczt] = useState('');
   const [manualOrderId, setManualOrderId] = useState('');
   const [manualDataRealizacji, setManualDataRealizacji] = useState('');
   const [manualTransport, setManualTransport] = useState('');
@@ -689,9 +694,10 @@ export default function App() {
       setIsLoading(true);
       setOrderMsg(orderId, '⏳ Upload ' + file.name + '...', false);
 
-      // Find or create order subfolder — with supportsAllDrives
+      // Find or create subfolder — full shared drive support
+      const qStr = encodeURIComponent("name='" + orderId + "' and '" + driveFolderId + "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false");
       const searchResp = await fetch(
-        'https://www.googleapis.com/drive/v3/files?q=name%3D%27' + encodeURIComponent(orderId) + '%27+and+%27' + driveFolderId + '%27+in+parents+and+mimeType%3D%27application%2Fvnd.google-apps.folder%27+and+trashed%3Dfalse&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1',
+        'https://www.googleapis.com/drive/v3/files?q=' + qStr + '&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives&pageSize=1&fields=files(id,name)',
         { headers: { Authorization: 'Bearer ' + accessToken } }
       );
       const searchData = await searchResp.json();
@@ -700,18 +706,15 @@ export default function App() {
       if (searchData.files && searchData.files.length > 0) {
         folderId = searchData.files[0].id;
       } else {
-        const createResp = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
+        // Try to create subfolder
+        const createResp = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&includeItemsFromAllDrives=true', {
           method: 'POST',
           headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder', parents: [driveFolderId] })
+          body: JSON.stringify({ name: String(orderId), mimeType: 'application/vnd.google-apps.folder', parents: [driveFolderId] })
         });
         const folderData = await createResp.json();
-        if (!folderData.id) {
-          // Fallback: upload directly to root folder without subfolder
-          folderId = driveFolderId;
-        } else {
-          folderId = folderData.id;
-        }
+        // Whether folder creation succeeded or not, use it or fallback to parent
+        folderId = folderData.id || driveFolderId;
       }
 
       const metadata = { name: file.name, parents: [folderId] };
@@ -719,13 +722,15 @@ export default function App() {
       form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
       form.append('file', file);
 
-      const uploadResp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink&supportsAllDrives=true', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + accessToken },
-        body: form
-      });
+      const uploadResp = await fetch(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink&supportsAllDrives=true',
+        { method: 'POST', headers: { Authorization: 'Bearer ' + accessToken }, body: form }
+      );
 
-      if (!uploadResp.ok) throw new Error('Upload nie powiodl sie: ' + uploadResp.status);
+      if (!uploadResp.ok) {
+        const errText = await uploadResp.text();
+        throw new Error('Upload ' + uploadResp.status + ': ' + errText.substring(0, 100));
+      }
       const uploadData = await uploadResp.json();
       if (!uploadData.id) throw new Error('Brak id pliku w odpowiedzi Drive');
 
@@ -1574,6 +1579,37 @@ export default function App() {
   const akcesoriaOrders = orders.filter(o => o.inAkcesoria && !o.akcesoriaArchived).sort(sortByKanapka);
   const archive3Orders = orders.filter(o => o.akcesoriaArchived === true).sort(sortByNum);
   const trudnyKlientOrders = orders.filter(o => o.trudnyKlient && !o.trudnyKlientArchived).sort(sortByNum);
+  const getOrderDekorCount = (o) => {
+    if (o.colorCountExclHdf > 0) return o.colorCountExclHdf;
+    // fallback: count dekory from excel
+    if (o.prestashopData?.dekoryRaw) {
+      try { return getUniqueDekory(parseDekoryFromExcel(o.prestashopData.dekoryRaw)).length; } catch(e) { return 0; }
+    }
+    return 0;
+  };
+
+  const getOrderDekoryNames = (o) => {
+    const names = [];
+    if (o.csvData) o.csvData.forEach(c => names.push(c.colorName.toLowerCase()));
+    if (o.prestashopData?.dekoryRaw) {
+      try { getUniqueDekory(parseDekoryFromExcel(o.prestashopData.dekoryRaw)).forEach(d => names.push(d.name.toLowerCase())); } catch(e) {}
+    }
+    return names;
+  };
+
+  const applyPsFilters = (list) => {
+    let result = list;
+    if (psFilterZaproj) result = result.filter(o => o.zaprojektowane);
+    if (psFilterSprawdzone) result = result.filter(o => o.sprawdzone);
+    if (psFilterBledy) result = result.filter(o => o.bledy);
+    if (psFilterKodPoczt.trim()) result = result.filter(o => (o.prestashopData?.kodPocztowy || '').includes(psFilterKodPoczt.trim()));
+    if (psFilterDekor.trim()) {
+      const q = psFilterDekor.trim().toLowerCase();
+      result = result.filter(o => getOrderDekoryNames(o).some(n => n.includes(q)));
+    }
+    return result;
+  };
+
   const prestashopSorted = orders.filter(o => o.inPrestashop && !o.movedToProduction);
   const wydaneNaProdukcjeOrders = orders.filter(o => o.wydaneNaProdukcje).sort(sortByKanapka);
   const planowanieOrders = orders.filter(o => o.inPlanowanie && !o.planowanieArchived).sort((a, b) => {
@@ -1584,7 +1620,7 @@ export default function App() {
   });
   const prestashopOrders = psSortBy === 'date' ? prestashopSorted.sort((a,b) => (a.prestashopData?.dataRealizacji||'9999').localeCompare(b.prestashopData?.dataRealizacji||'9999'))
     : psSortBy === 'value' ? prestashopSorted.sort((a,b) => parseFloat((a.prestashopData?.wartosc||'0').replace(',','.')) - parseFloat((b.prestashopData?.wartosc||'0').replace(',','.')))
-    : psSortBy === 'colors' ? prestashopSorted.sort((a,b) => (b.colorCountExclHdf||0) - (a.colorCountExclHdf||0))
+    : psSortBy === 'colors' ? prestashopSorted.sort((a,b) => getOrderDekorCount(b) - getOrderDekorCount(a))
     : prestashopSorted.sort(sortByNum);
 
   const selectedOrder = selectedOrderId ? orders.find(o => o.id === selectedOrderId) : null;
@@ -1649,7 +1685,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.6</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.7</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1694,7 +1730,11 @@ export default function App() {
                 <div className="search-box">
                   <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
                 </div>
-                {filtered.map(order => {
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '6px', alignItems: 'center', background: '#f5f5f5', padding: '8px', borderRadius: '6px' }}>
+                  <input type="text" value={psFilterKodPoczt} onChange={e => setPsFilterKodPoczt(e.target.value)} placeholder="Kod pocztowy..." style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ddd', borderRadius: '4px', width: '130px' }} />
+                  {psFilterKodPoczt && <button className="btn" onClick={() => setPsFilterKodPoczt('')} style={{ fontSize: '11px', padding: '2px 8px' }}>✕</button>}
+                </div>
+                {applyPsFilters(filtered).map(order => {
                   const ps = order.prestashopData || {};
                   return (
                     <React.Fragment key={order.docId}>
@@ -2245,12 +2285,30 @@ export default function App() {
               <div>
                 <h2>🛒 Prestashop ({prestashopOrders.length})</h2>
 
-                <div style={{ display: 'flex', gap: '4px', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '4px', marginBottom: '6px', flexWrap: 'wrap' }}>
                   {['id','date','value','colors'].map(s => (
                     <button key={s} className={`btn ${psSortBy === s ? 'btn-primary' : ''}`} onClick={() => setPsSortBy(s)} style={{ padding: '4px 10px', fontSize: '11px' }}>
                       {s === 'id' ? '# Numer' : s === 'date' ? '📅 Data' : s === 'value' ? '💰 Wartość' : '🎨 Kolory'}
                     </button>
                   ))}
+                </div>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '6px', alignItems: 'center', background: '#f5f5f5', padding: '8px', borderRadius: '6px' }}>
+                  <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <input type="checkbox" checked={psFilterZaproj} onChange={e => setPsFilterZaproj(e.target.checked)} /> Zaprojektowane
+                  </label>
+                  <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <input type="checkbox" checked={psFilterSprawdzone} onChange={e => setPsFilterSprawdzone(e.target.checked)} /> Sprawdzone
+                  </label>
+                  <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <input type="checkbox" checked={psFilterBledy} onChange={e => setPsFilterBledy(e.target.checked)} /> Błędy
+                  </label>
+                  <input type="text" value={psFilterKodPoczt} onChange={e => setPsFilterKodPoczt(e.target.value)} placeholder="Kod pocztowy..." style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ddd', borderRadius: '4px', width: '110px' }} />
+                  <div style={{ position: 'relative' }}>
+                    <input type="text" value={psFilterDekor} onChange={e => setPsFilterDekor(e.target.value)} placeholder="Szukaj dekoru..." style={{ padding: '3px 7px', fontSize: '12px', border: '1px solid #ddd', borderRadius: '4px', width: '130px' }} />
+                  </div>
+                  {(psFilterZaproj || psFilterSprawdzone || psFilterBledy || psFilterKodPoczt || psFilterDekor) && (
+                    <button className="btn" onClick={() => { setPsFilterZaproj(false); setPsFilterSprawdzone(false); setPsFilterBledy(false); setPsFilterKodPoczt(''); setPsFilterDekor(''); }} style={{ fontSize: '11px', padding: '2px 8px' }}>✕ Wyczyść filtry</button>
+                  )}
                 </div>
 
                 {canManagePS && (
@@ -2289,7 +2347,7 @@ export default function App() {
                   <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
                 </div>
 
-                {prestashopOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
+                {applyPsFilters(prestashopOrders.filter(o => !searchQuery || o.id.includes(searchQuery))).map(order => {
                   const ps = order.prestashopData || {};
                   return (
                     <React.Fragment key={order.docId}>
@@ -2525,6 +2583,7 @@ export default function App() {
                               const uniqueDekory = getUniqueDekory(excelDekory);
                               const matched = order.dekorMatches || {};
                               const matchedValues = Object.values(matched);
+                              const hiddenDekory = order.dekorHidden || [];
                               const allCsvMatched = csvColors.length > 0 && csvColors.every(c => matched[c.key]);
 
                               const removeFromCsv = (key) => {
@@ -2532,10 +2591,17 @@ export default function App() {
                                 delete nm[key];
                                 handleUpdateOrderField(order.id, 'dekorMatches', nm);
                               };
-                              const removeFromExcel = (dekorName) => {
+                              const removeFromExcel = async (dekorName) => {
+                                // Remove from matches
                                 const nm = { ...(order.dekorMatches || {}) };
                                 Object.keys(nm).forEach(k => { if (nm[k] === dekorName) delete nm[k]; });
-                                handleUpdateOrderField(order.id, 'dekorMatches', nm);
+                                // Add to hidden list so it stays removed
+                                const hidden = [...(order.dekorHidden || [])];
+                                if (!hidden.includes(dekorName)) hidden.push(dekorName);
+                                try {
+                                  const orderRef2 = doc(db, 'orders', order.docId);
+                                  await updateDoc(orderRef2, { dekorMatches: nm, dekorHidden: hidden });
+                                } catch(e) { alert('Blad: ' + e.message); }
                               };
 
                               return (
@@ -2558,7 +2624,7 @@ export default function App() {
                                     </div>
                                     <div>
                                       <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>Dekory z Excel:</div>
-                                      {uniqueDekory.map((d, i) => {
+                                      {uniqueDekory.filter(d => !hiddenDekory.includes(d.name)).map((d, i) => {
                                         const isUsed = matchedValues.includes(d.name);
                                         return (
                                           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '3px', marginBottom: '3px' }}>
