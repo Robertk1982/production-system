@@ -122,6 +122,7 @@ export default function App() {
   
   const [photoSession, setPhotoSession] = useState(null);
   const [uploadMessage, setUploadMessage] = useState('');
+  const [orderMessages, setOrderMessages] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   
   const [newUserName, setNewUserName] = useState('');
@@ -668,17 +669,30 @@ export default function App() {
   const PRODUKCJA_FOLDER_ID = '1r3zjtvSfPa36a1q_GG9giDaNtmtPCvew';
   const CSV_DRIVE_FOLDER_ID = '0ALO7nCAWeZ9QUk9PVA';
 
+  const setOrderMsg = (orderId, msg, autoClose = true) => {
+    setUploadMessage(msg); // keep global for CSV section
+    // Also store per-order message
+    setOrderMessages(prev => ({ ...prev, [orderId]: msg }));
+    if (autoClose) {
+      setTimeout(() => setOrderMessages(prev => {
+        const n = { ...prev };
+        if (n[orderId] === msg) delete n[orderId];
+        return n;
+      }), 8000);
+    }
+  };
+
   const handleUploadAttachment = async (orderId, file, targetFolderId) => {
     const driveFolderId = targetFolderId || ATTACHMENTS_FOLDER_ID;
     if (!accessToken) { alert('Najpierw autoryzuj Google Drive w zakładce Zdjęcia'); return; }
     try {
       setIsLoading(true);
-      setUploadMessage(`⏳ Upload ${file.name}...`);
+      setOrderMsg(orderId, '⏳ Upload ' + file.name + '...', false);
 
-      // Find or create order subfolder in attachments folder
+      // Find or create order subfolder — with supportsAllDrives
       const searchResp = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${orderId}' and '${driveFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&pageSize=1`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
+        'https://www.googleapis.com/drive/v3/files?q=name%3D%27' + encodeURIComponent(orderId) + '%27+and+%27' + driveFolderId + '%27+in+parents+and+mimeType%3D%27application%2Fvnd.google-apps.folder%27+and+trashed%3Dfalse&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1',
+        { headers: { Authorization: 'Bearer ' + accessToken } }
       );
       const searchData = await searchResp.json();
       let folderId;
@@ -686,14 +700,18 @@ export default function App() {
       if (searchData.files && searchData.files.length > 0) {
         folderId = searchData.files[0].id;
       } else {
-        const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+        const createResp = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: orderId, mimeType: 'application/vnd.google-apps.folder', parents: [driveFolderId] })
         });
         const folderData = await createResp.json();
-        if (!folderData.id) throw new Error('Nie udało się utworzyć folderu');
-        folderId = folderData.id;
+        if (!folderData.id) {
+          // Fallback: upload directly to root folder without subfolder
+          folderId = driveFolderId;
+        } else {
+          folderId = folderData.id;
+        }
       }
 
       const metadata = { name: file.name, parents: [folderId] };
@@ -701,27 +719,28 @@ export default function App() {
       form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
       form.append('file', file);
 
-      const uploadResp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink', {
+      const uploadResp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink&supportsAllDrives=true', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: { Authorization: 'Bearer ' + accessToken },
         body: form
       });
 
-      if (!uploadResp.ok) throw new Error('Upload nie powiódł się');
+      if (!uploadResp.ok) throw new Error('Upload nie powiodl sie: ' + uploadResp.status);
       const uploadData = await uploadResp.json();
+      if (!uploadData.id) throw new Error('Brak id pliku w odpowiedzi Drive');
 
-      // Save attachment info in Firebase
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
       const currentAttachments = order.attachments || [];
       await updateDoc(orderRef, {
-        attachments: [...currentAttachments, { name: file.name, driveFileId: uploadData.id, driveLink: uploadData.webViewLink || '', uploadedAt: new Date().toISOString() }], history: [...(order.history || []), historyEntry(`Dodano załącznik: ${file.name}`)]
+        attachments: [...currentAttachments, { name: file.name, driveFileId: uploadData.id, driveLink: uploadData.webViewLink || '', uploadedAt: new Date().toISOString(), uploadedBy: currentUser?.name || currentUser?.email || '?' }],
+        history: [...(order.history || []), historyEntry('Dodano zalacznik: ' + file.name)]
       });
 
-      setUploadMessage(`✅ ${file.name} uploadowany`);
+      setOrderMsg(orderId, '✅ ' + file.name + ' uploadowany');
     } catch (err) {
-      setUploadMessage(`❌ Błąd: ${err.message}`);
+      setOrderMsg(orderId, '❌ Błąd uploadu: ' + err.message);
     } finally {
       setIsLoading(false);
     }
@@ -837,12 +856,26 @@ export default function App() {
   };
 
   const handleMoveToArchive3 = async (orderId) => {
-    if (!window.confirm(`Przenieść zamówienie #${orderId} do archiwum akcesoriów?`)) return;
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      await updateDoc(orderRef, { akcesoriaArchived: true, history: [...(order.history || []), historyEntry('Akcesoria → archiwum')] });
+      const archiveEntry = {
+        archivedAt: new Date().toISOString(),
+        archivedBy: currentUser?.name || currentUser?.email || '?',
+        brakAkcesoriow: order.brakAkcesoriow || false,
+        brakiMagazynowe: order.brakiMagazynowe || false,
+        brakiList: order.brakiList || [],
+        akcesoriaUwagi: order.akcesoriaUwagi || '',
+        złożone: order.złożone || false,
+        dołożone: order.dołożone || false,
+      };
+      await updateDoc(orderRef, {
+        akcesoriaArchived: true,
+        inAkcesoria: false,
+        akcesoriaArchiveData: archiveEntry,
+        history: [...(order.history || []), historyEntry('Przeniesiono do archiwum akcesoriów')]
+      });
     } catch (err) { alert('Błąd: ' + err.message); }
   };
 
@@ -1402,13 +1435,24 @@ export default function App() {
     setDateEditOrderId('ps_date_' + orderId);
   };
 
+  // Convert any date format to DD.MM.YYYY
+  const toDisplayDate = (d) => {
+    if (!d) return '';
+    if (d.includes('-') && d.length === 10) {
+      const [y, m, day] = d.split('-');
+      return day + '.' + m + '.' + y;
+    }
+    return d; // already DD.MM.YYYY
+  };
+
   const handleSavePsDate = async (orderId, newDate) => {
     try {
       const order = orders.find(o => o.id === orderId);
       if (!order) return;
       const orderRef = doc(db, 'orders', order.docId);
-      const newPs = { ...(order.prestashopData || {}), dataRealizacji: newDate };
-      await updateDoc(orderRef, { prestashopData: newPs, history: [...(order.history || []), historyEntry('Zmieniono datę realizacji: ' + newDate)] });
+      const displayDate = toDisplayDate(newDate);
+      const newPs = { ...(order.prestashopData || {}), dataRealizacji: displayDate };
+      await updateDoc(orderRef, { prestashopData: newPs, history: [...(order.history || []), historyEntry('Zmieniono datę realizacji: ' + displayDate)] });
       setDateEditOrderId(null);
     } catch (err) { alert('Błąd: ' + err.message); }
   };
@@ -1605,7 +1649,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.5</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.6</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1678,16 +1722,32 @@ export default function App() {
                               <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy || '—'}</div>
                               <div><strong>Paleta:</strong> {order.paletaPrestashop || '—'}</div>
                               <div><strong>Formatki:</strong> {order.totalFormats || '—'}</div>
-                              {order.longestElement > 0 && <div><strong>Najdłuższy el.:</strong> {order.longestElement} mm</div>}
+                              {order.longestElement > 0 && <div><strong>Najdłuższy element:</strong> {order.longestElement} mm</div>}
                               {order.colorCountExclHdf > 0 && <div><strong>Kolory (bez HDF):</strong> {order.colorCountExclHdf}</div>}
+                              {order.hasNoDrilling && <div style={{ gridColumn: '1/-1', color: '#ff6f00', fontWeight: 'bold' }}>⚠️ BRAK NAWIERTÓW</div>}
                               {order.brakAkcesoriow && <div style={{ gridColumn: '1/-1', color: '#c62828' }}><strong>❌ Brak akcesoriów — potwierdzone</strong></div>}
                               {order.trudnyKlient && <div style={{ gridColumn: '1/-1', color: '#c62828' }}><strong>⚠️ Trudny klient</strong></div>}
                             </div>
                             {ps.uwagi && <div style={{ marginTop: '6px' }}><strong>Uwagi:</strong> {ps.uwagi}</div>}
+                            {order.prestashopUwagi && <div style={{ marginTop: '4px' }}><strong>Uwagi PS:</strong> {order.prestashopUwagi}</div>}
                             <div style={{ marginTop: '6px', fontSize: '11px', color: '#999' }}>
                               Wydano: {order.wydaneNaProdukcjeAt ? new Date(order.wydaneNaProdukcjeAt).toLocaleString('pl-PL') : '—'} przez {order.wydaneNaProdukcjeBy || '?'}
                             </div>
                           </div>
+
+                          {/* Kolory CSV */}
+                          {order.csvData && order.csvData.length > 0 && (
+                            <div style={{ marginBottom: '10px' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>🎨 Kolory ({order.csvData.length}):</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                {order.csvData.map((c, i) => (
+                                  <span key={i} style={{ background: '#e8eaf6', border: '1px solid #c5cae9', borderRadius: '4px', padding: '2px 6px', fontSize: '10px' }}>
+                                    {c.colorName} {c.surfaceArea > 0 ? c.surfaceArea + 'm²' : ''}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
 
                           {/* Kanapka + pozycja — edytowalne tylko tutaj */}
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
@@ -2049,6 +2109,11 @@ export default function App() {
                         );
                       })()}
 
+                      {orderMessages[order.id] && (
+                        <div style={{ background: orderMessages[order.id].includes('✅') ? '#e8f5e9' : '#ffebee', color: orderMessages[order.id].includes('✅') ? '#2e7d32' : '#c62828', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', marginBottom: '8px' }}>
+                          {orderMessages[order.id]}
+                        </div>
+                      )}
                       <div style={{ marginBottom: '1rem' }}>
                         <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Braki / uwagi:</label>
                         <textarea value={order.akcesoriaUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'akcesoriaUwagi', e.target.value)} placeholder="Braki, uwagi..." style={{ width: '100%', height: '60px' }} />
@@ -2073,14 +2138,16 @@ export default function App() {
 
                       {/* BRAKI MAGAZYNOWE */}
                       <div style={{ background: '#fff8e1', border: '1px solid #ffcc02', borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
-                        <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: '6px' }}>
+                        <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', cursor: order.brakiMagazynowe ? 'default' : 'pointer', marginBottom: '6px' }}>
                           <input type="checkbox" checked={order.brakiMagazynowe || false}
                             onChange={async () => {
+                              if (order.brakiMagazynowe) return; // nie można odklikać — znika automatycznie gdy wszystko uzupełnione
                               const orderRef2 = doc(db, 'orders', order.docId);
-                              await updateDoc(orderRef2, { brakiMagazynowe: !order.brakiMagazynowe, history: [...(order.history || []), historyEntry(!order.brakiMagazynowe ? 'Zaznaczono braki magazynowe' : 'Cofnieto braki magazynowe')] });
+                              await updateDoc(orderRef2, { brakiMagazynowe: true, history: [...(order.history || []), historyEntry('Zaznaczono braki magazynowe')] });
                             }}
                           />
                           <span style={{ fontWeight: 'bold' }}>⚠️ Brak akcesoriów na magazynie</span>
+                          {order.brakiMagazynowe && <span style={{ fontSize: '10px', color: '#999' }}>(znika gdy wszystkie uzupełnione)</span>}
                         </label>
                         {order.brakiMagazynowe && (() => {
                           const braki = order.brakiList || [];
@@ -2144,17 +2211,25 @@ export default function App() {
                         })()}
                       </div>
 
-                      <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem', flexWrap: 'wrap' }}>
-                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading} /> Przygotowane
-                        </label>
-                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading} /> Dołożone do palety
-                        </label>
-                      </div>
-                      {(order.złożone && order.dołożone) && (
-                        <button className="btn btn-success" onClick={() => handleMoveToArchive3(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Archiwum akcesoriów</button>
-                      )}
+                      {(() => {
+                        const activeBraki = order.brakiMagazynowe && (order.brakiList || []).some(b => !b.uzupelnione);
+                        return (
+                          <div>
+                            <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem', flexWrap: 'wrap', opacity: activeBraki ? 0.4 : 1 }}>
+                              <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }} title={activeBraki ? 'Najpierw uzupełnij braki magazynowe' : ''}>
+                                <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading || activeBraki} /> Przygotowane
+                              </label>
+                              <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }} title={activeBraki ? 'Najpierw uzupełnij braki magazynowe' : ''}>
+                                <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading || activeBraki} /> Dołożone do palety
+                              </label>
+                            </div>
+                            {activeBraki && <p style={{ fontSize: '11px', color: '#e65100', margin: '-8px 0 8px' }}>Uzupełnij braki magazynowe przed oznaczeniem przygotowane/dołożone</p>}
+                            {(order.złożone && order.dołożone && !activeBraki) && (
+                              <button className="btn btn-success" onClick={() => handleMoveToArchive3(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Archiwum akcesoriów</button>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </React.Fragment>
@@ -2486,12 +2561,17 @@ export default function App() {
                                       {uniqueDekory.map((d, i) => {
                                         const isUsed = matchedValues.includes(d.name);
                                         return (
-                                          <div key={i} draggable={!isUsed}
-                                            onDragStart={e => { if (!isUsed) e.dataTransfer.setData('text/plain', d.name); }}
-                                            onContextMenu={e => { e.preventDefault(); if (isUsed && window.confirm('Usunac powiazanie dekoru ' + d.name + '?')) removeFromExcel(d.name); }}
-                                            style={{ background: isUsed ? '#e8f5e9' : '#e3f2fd', border: '1px solid ' + (isUsed ? '#a5d6a7' : '#90caf9'), borderRadius: '4px', padding: '4px 6px', marginBottom: '3px', fontSize: '11px', cursor: isUsed ? 'context-menu' : 'grab', opacity: isUsed ? 0.6 : 1 }}>
-                                            {d.name} <span style={{ color: isUsed ? '#4caf50' : '#1976d2', fontSize: '10px' }}>{isUsed ? '✓' : d.m2 + ' m²'}</span>
-                                            {isUsed && <button onClick={() => removeFromExcel(d.name)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '11px', marginLeft: '2px' }}>✕</button>}
+                                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '3px', marginBottom: '3px' }}>
+                                            <div draggable={!isUsed}
+                                              onDragStart={e => { if (!isUsed) e.dataTransfer.setData('text/plain', d.name); }}
+                                              onContextMenu={e => { e.preventDefault(); if (window.confirm('Usunąć dekor ' + d.name + ' z listy?')) removeFromExcel(d.name); }}
+                                              style={{ flex: 1, background: isUsed ? '#e8f5e9' : '#e3f2fd', border: '1px solid ' + (isUsed ? '#a5d6a7' : '#90caf9'), borderRadius: '4px', padding: '4px 6px', fontSize: '11px', cursor: isUsed ? 'default' : 'grab', opacity: isUsed ? 0.7 : 1 }}>
+                                              {d.name} <span style={{ color: isUsed ? '#4caf50' : '#1976d2', fontSize: '10px' }}>{isUsed ? '✓' : d.m2 + ' m²'}</span>
+                                            </div>
+                                            <button
+                                              onClick={() => { if (window.confirm('Usunąć dekor ' + d.name + ' z listy?')) removeFromExcel(d.name); }}
+                                              title="Usuń dekor z listy"
+                                              style={{ border: 'none', background: '#ffebee', color: '#f44336', cursor: 'pointer', borderRadius: '4px', padding: '2px 5px', fontSize: '12px', fontWeight: 'bold', flexShrink: 0 }}>✕</button>
                                           </div>
                                         );
                                       })}
@@ -3008,9 +3088,28 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                    {akcesoriaHistory.length > 0 && (
+                    {order.akcesoriaArchiveData && (
                       <div style={{ marginTop: '8px', borderTop: '1px solid #eee', paddingTop: '6px' }}>
-                        <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>📋 Historia akcesoriów:</div>
+                        <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>📋 Dane z archiwizacji:</div>
+                        <div style={{ fontSize: '11px', color: '#555' }}>
+                          Zarchiwizował: <strong>{order.akcesoriaArchiveData.archivedBy}</strong> — {new Date(order.akcesoriaArchiveData.archivedAt).toLocaleString('pl-PL')}
+                        </div>
+                        {order.akcesoriaArchiveData.akcesoriaUwagi && <div style={{ fontSize: '11px', color: '#555' }}>Uwagi: {order.akcesoriaArchiveData.akcesoriaUwagi}</div>}
+                        {order.akcesoriaArchiveData.brakiList?.length > 0 && (
+                          <div style={{ marginTop: '4px' }}>
+                            <div style={{ fontSize: '11px', fontWeight: 'bold' }}>Braki magazynowe:</div>
+                            {order.akcesoriaArchiveData.brakiList.map((b, i) => (
+                              <div key={i} style={{ fontSize: '11px', color: '#555', paddingLeft: '8px' }}>
+                                • {b.nazwa} ({b.ilosc}) — {b.uzupelnione ? '✅ uzupełnione' : b.zamowione ? '⏳ zamówione' : '❌ niezamówione'}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {akcesoriaHistory.length > 0 && (
+                      <div style={{ marginTop: '6px', borderTop: '1px solid #eee', paddingTop: '6px' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#666', marginBottom: '4px' }}>📋 Historia:</div>
                         {akcesoriaHistory.map((h, i) => (
                           <div key={i} style={{ fontSize: '11px', color: '#555', padding: '2px 0' }}>
                             {new Date(h.timestamp).toLocaleString('pl-PL')} — <strong>{h.user}</strong>: {h.action}
@@ -3237,7 +3336,7 @@ export default function App() {
 
               <div className="card" style={{ background: '#ffebee' }}>
                 <h3 style={{ color: '#c62828' }}>🗑️ Czyszczenie danych testowych</h3>
-                <p style={{ fontSize: '12px', color: '#666' }}>Usuwa WSZYSTKIE zamówienia z systemu. Hasło: FlexM</p>
+                <p style={{ fontSize: '12px', color: '#666' }}>Usuwa WSZYSTKIE zamówienia z systemu.</p>
                 <button className="btn btn-danger" onClick={handleClearAllOrders} disabled={isLoading} style={{ width: '100%' }}>🗑️ Wyczyść wszystkie zamówienia</button>
               </div>
 
