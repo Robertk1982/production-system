@@ -1228,6 +1228,33 @@ export default function App() {
     return reasons;
   };
 
+  // Parse produkty from XLS column 2 into structured rows
+  const parseProduktyFromRaw = (raw) => {
+    if (!raw) return [];
+    // Format: "1 x Nazwa produktu (cena PLN / szt. | szer. Xmm | wys. Ymm | gl. Zmm | ...)"
+    const results = [];
+    const parts = raw.split(/(?=\d+ x )/);
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const qtyMatch = trimmed.match(/^(\d+) x (.+)/);
+      if (!qtyMatch) continue;
+      const qty = qtyMatch[1];
+      const rest = qtyMatch[2];
+      const parenIdx = rest.indexOf('(');
+      const name = parenIdx > -1 ? rest.substring(0, parenIdx).trim() : rest.trim();
+      let wys = '', szer = '', gl = '';
+      const wysMatch = rest.match(/wys\.?\s*(\d+)\s*mm/i);
+      const szerMatch = rest.match(/szer\.?\s*(\d+)\s*mm/i);
+      const glMatch = rest.match(/g[lł]\.?\s*(\d+)\s*mm/i);
+      if (wysMatch) wys = wysMatch[1];
+      if (szerMatch) szer = szerMatch[1];
+      if (glMatch) gl = glMatch[1];
+      results.push({ name, qty, wys, szer, gl, link: '' });
+    }
+    return results;
+  };
+
   const parseDekoryFromExcel = (raw) => {
     if (!raw || raw === 'nan' || raw === 'NaN') return [];
     return raw.split('\n')
@@ -1497,7 +1524,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 1.5rem 0', color: '#555' }}>System v24.1</h2>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.3</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1589,9 +1616,6 @@ export default function App() {
                               <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Akcesoria:</div>
                               {order.accessoryLinks.okucLink ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a> : null}
                               {order.accessoryLinks.ciecieLink ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a> : null}
-                              {!order.accessoryLinks.okucLink && !order.accessoryLinks.ciecieLink && <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>}
-                              {order.accessoryLinks.aFile ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 A_{order.id}</a> : null}
-                              {order.accessoryLinks.bFile ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 B_{order.id}</a> : null}
                             </div>
                           )}
 
@@ -1842,7 +1866,14 @@ export default function App() {
                         <div style={{ display: 'flex', gap: '8px', fontSize: '13px', marginTop: '2px' }}>
                           {order.złożone && <span style={{ background: '#d4edda', padding: '1px 6px', borderRadius: '4px' }}>✅ złożone</span>}
                           {order.dołożone && <span style={{ background: '#cce5ff', padding: '1px 6px', borderRadius: '4px' }}>📦 dołożone</span>}
-                          {order.brakAkcesoriow && <span style={{ background: '#ffebee', color: '#c62828', padding: '1px 6px', borderRadius: '4px' }}>❌ brak akces.</span>}
+                          {order.brakiMagazynowe && (() => {
+                            const braki = (order.brakiList || []).filter(b => !b.uzupelnione);
+                            const wszystkieZamowione = braki.length > 0 && braki.every(b => b.zamowione);
+                            const maBraki = braki.some(b => !b.zamowione);
+                            if (maBraki) return <span style={{ background: '#ffebee', color: '#c62828', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>❌ BRAKI</span>;
+                            if (wszystkieZamowione) return <span style={{ background: '#fff3e0', color: '#e65100', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>⏳ oczekiwanie</span>;
+                            return null;
+                          })()}
                           {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
                         </div>
                       </div>
@@ -1892,18 +1923,78 @@ export default function App() {
                         ))}
                       </div>
 
+                      {/* BRAKI MAGAZYNOWE */}
+                      <div style={{ background: '#fff8e1', border: '1px solid #ffcc02', borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: '6px' }}>
+                          <input type="checkbox" checked={order.brakiMagazynowe || false}
+                            onChange={async () => {
+                              const orderRef2 = doc(db, 'orders', order.docId);
+                              await updateDoc(orderRef2, { brakiMagazynowe: !order.brakiMagazynowe, history: [...(order.history || []), historyEntry(!order.brakiMagazynowe ? 'Zaznaczono braki magazynowe' : 'Cofnieto braki magazynowe')] });
+                            }}
+                          />
+                          <span style={{ fontWeight: 'bold' }}>⚠️ Brak akcesoriów na magazynie</span>
+                        </label>
+                        {order.brakiMagazynowe && (() => {
+                          const braki = order.brakiList || [];
+                          const aktualizujBraki = async (newBraki) => {
+                            const orderRef2 = doc(db, 'orders', order.docId);
+                            await updateDoc(orderRef2, { brakiList: newBraki, history: [...(order.history || []), historyEntry('Zaktualizowano liste brakow')] });
+                          };
+                          return (
+                            <div>
+                              <button className="btn btn-primary" onClick={async () => {
+                                const nazwa = window.prompt('Nazwa brakującego akcesorium:');
+                                if (!nazwa || !nazwa.trim()) return;
+                                const ilosc = window.prompt('Ilość:');
+                                if (!ilosc || !ilosc.trim()) return;
+                                aktualizujBraki([...braki, { nazwa: nazwa.trim(), ilosc: ilosc.trim(), zamowione: false, uzupelnione: false }]);
+                              }} style={{ fontSize: '11px', padding: '3px 8px', marginBottom: '6px' }}>+ Dodaj brak</button>
+                              {braki.length > 0 && (
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                                  <thead>
+                                    <tr style={{ background: '#f5f5f5' }}>
+                                      <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'left' }}>Nazwa</th>
+                                      <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>Ilość</th>
+                                      <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>Zamówione</th>
+                                      <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>Uzupełnione</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {braki.filter(b => !b.uzupelnione).map((b, i) => (
+                                      <tr key={i} style={{ background: b.zamowione ? '#e8f5e9' : '#fff' }}>
+                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd' }}>{b.nazwa}</td>
+                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{b.ilosc}</td>
+                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                          <input type="checkbox" checked={b.zamowione || false} onChange={() => {
+                                            const nb = braki.map((x, j) => j === i ? { ...x, zamowione: !x.zamowione } : x);
+                                            aktualizujBraki(nb);
+                                          }} />
+                                        </td>
+                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                          <input type="checkbox" checked={b.uzupelnione || false} onChange={() => {
+                                            const nb = braki.map((x, j) => j === i ? { ...x, uzupelnione: true } : x);
+                                            aktualizujBraki(nb);
+                                          }} />
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+
                       <div style={{ display: 'flex', gap: '16px', marginBottom: '1rem', flexWrap: 'wrap' }}>
                         <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <input type="checkbox" checked={order.brakAkcesoriow || false} onChange={() => handleToggleAkcesoria(order.id, 'brakAkcesoriow')} disabled={isLoading} /> ❌ Brak akcesoriów
+                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading} /> Przygotowane
                         </label>
-                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.brakAkcesoriow ? 0.4 : 1 }}>
-                          <input type="checkbox" checked={order.złożone || false} onChange={() => handleToggleAkcesoria(order.id, 'złożone')} disabled={isLoading || order.brakAkcesoriow} /> Przygotowane
-                        </label>
-                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.brakAkcesoriow ? 0.4 : 1 }}>
-                          <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading || order.brakAkcesoriow} /> Dołożone do palety
+                        <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <input type="checkbox" checked={order.dołożone || false} onChange={() => handleToggleAkcesoria(order.id, 'dołożone')} disabled={isLoading} /> Dołożone do palety
                         </label>
                       </div>
-                      {((order.złożone && order.dołożone) || order.brakAkcesoriow) && (
+                      {(order.złożone && order.dołożone) && (
                         <button className="btn btn-success" onClick={() => handleMoveToArchive3(order.id)} disabled={isLoading} style={{ width: '100%' }}>🗄️ Archiwum akcesoriów</button>
                       )}
                     </div>
@@ -2025,6 +2116,58 @@ export default function App() {
                             }</div>
                             <div><strong>Formatki:</strong> {order.totalFormats || '—'}</div>
                           </div>
+
+                          {/* PRODUKTY TABLE */}
+                          {order.prestashopData?.produkty && (() => {
+                            const rows = parseProduktyFromRaw(order.prestashopData.produkty);
+                            if (rows.length === 0) return null;
+                            return (
+                              <div style={{ marginBottom: '1rem' }}>
+                                <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📦 Produkty w zamówieniu:</div>
+                                <div style={{ overflowX: 'auto' }}>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                                    <thead>
+                                      <tr style={{ background: '#f5f5f5' }}>
+                                        <th style={{ padding: '4px 6px', textAlign: 'left', border: '1px solid #ddd' }}>Nazwa produktu</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd', whiteSpace: 'nowrap' }}>Ilość</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd', whiteSpace: 'nowrap' }}>Wys. mm</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd', whiteSpace: 'nowrap' }}>Szer. mm</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd', whiteSpace: 'nowrap' }}>Gł. mm</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd', whiteSpace: 'nowrap' }}>Link</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {rows.map((row, idx) => (
+                                        <tr key={idx} style={{ borderBottom: '1px solid #eee' }}>
+                                          <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{row.name}</td>
+                                          <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.qty}</td>
+                                          <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.wys || '—'}</td>
+                                          <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.szer || '—'}</td>
+                                          <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.gl || '—'}</td>
+                                          <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>
+                                            {row.link
+                                              ? <a href={row.link} target="_blank" rel="noreferrer" style={{ color: '#1976d2', fontSize: '11px' }}>🔗 otwórz</a>
+                                              : <input type="text" placeholder="wklej link..." defaultValue=""
+                                                  onBlur={e => {
+                                                    const val = e.target.value.trim();
+                                                    if (val) {
+                                                      const newRows = parseProduktyFromRaw(order.prestashopData.produkty);
+                                                      newRows[idx].link = val;
+                                                      const newPs = { ...(order.prestashopData || {}), produktyLinks: (order.prestashopData.produktyLinks || []).map((l, i) => i === idx ? val : l).concat(newRows.slice((order.prestashopData.produktyLinks || []).length).map((r, i) => i === idx - (order.prestashopData.produktyLinks || []).length ? val : '')) };
+                                                      newPs.produktyLinks = newRows.map((r, i) => i === idx ? val : ((order.prestashopData.produktyLinks || [])[i] || ''));
+                                                      handleUpdateOrderField(order.id, 'prestashopData', newPs);
+                                                    }
+                                                  }}
+                                                  style={{ fontSize: '10px', width: '80px', padding: '2px' }} />}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            );
+                          })()}
 
                           {order.longestElement > 0 && (
                             <div style={{ background: '#e3f2fd', padding: '8px', borderRadius: '4px', marginBottom: '1rem', fontSize: '14px', fontWeight: 'bold' }}>
@@ -2249,6 +2392,26 @@ export default function App() {
                               <button className="btn" onClick={() => handleFetchAccessoryLinks(order.id)} disabled={isLoading} style={{ fontSize: '10px', padding: '2px 8px', marginTop: '6px', display: 'block' }}>🔄 Odśwież linki do plików</button>
                             )}
                           </div>
+
+                          {/* BRAK AKCESORIÓW — checkbox potwierdzenia */}
+                          {order.csvLoaded && (
+                            <div style={{ background: order.brakAkcesoriow ? '#fff3e0' : '#f5f5f5', border: '1px solid ' + (order.brakAkcesoriow ? '#ff9800' : '#ddd'), borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
+                              <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                <input type="checkbox" checked={order.brakAkcesoriow || false}
+                                  onChange={async () => {
+                                    if (!order.brakAkcesoriow) {
+                                      const ok = window.confirm('Czy jestes pewien, ze w zamowieniu nie ma akcesoriow?\n\nOK = Tak, potwierdzam brak akcesoriow\nAnuluj = W zamowieniu sa akcesoria, uzupelnie katalog i pobiorę CSV ponownie');
+                                      if (!ok) return;
+                                    }
+                                    const orderRef2 = doc(db, 'orders', order.docId);
+                                    await updateDoc(orderRef2, { brakAkcesoriow: !order.brakAkcesoriow, history: [...(order.history || []), historyEntry(!order.brakAkcesoriow ? 'Potwierdzono brak akcesoriow' : 'Cofnieto brak akcesoriow')] });
+                                  }}
+                                />
+                                <span style={{ fontWeight: 'bold' }}>❌ Brak akcesoriów w zamówieniu</span>
+                              </label>
+                              {order.brakAkcesoriow && <p style={{ fontSize: '11px', color: '#e65100', margin: '4px 0 0' }}>Zamówienie nie trafi do katalogu Akcesoria po wydaniu na produkcję.</p>}
+                            </div>
+                          )}
 
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                             {canManagePS && !order.csvLoaded && (
