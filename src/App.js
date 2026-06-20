@@ -26,6 +26,8 @@ const ACCESS_FOLDERS = [
   { key: 'wydane_na_produkcje', label: 'Wydane na produkcję - PS (widok)' },
   { key: 'wydane_na_produkcje_manage', label: 'Wydane na produkcję - PS (zarządzanie)' },
   { key: 'planowanie', label: 'Planowanie produkcji' },
+  { key: 'konsultacje', label: 'Konsultacje' },
+  { key: 'probki', label: 'Próbki' },
   { key: 'wydane', label: 'Wydane na produkcję (widok)' },
   { key: 'wydane_manage', label: 'Wydane na produkcję (zarządzanie)' },
   { key: 'akcesoria', label: 'Akcesoria' },
@@ -123,6 +125,9 @@ export default function App() {
   const [photoSession, setPhotoSession] = useState(null);
   const [uploadMessage, setUploadMessage] = useState('');
   const [orderMessages, setOrderMessages] = useState({});
+  const [akcesoriaKatalog, setAkcesoriaKatalog] = useState([]);
+  const [akcesoriaKatalogLoading, setAkcesoriaKatalogLoading] = useState(false);
+  const [brakiSearchQuery, setBrakiSearchQuery] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   
   const [newUserName, setNewUserName] = useState('');
@@ -674,6 +679,27 @@ export default function App() {
   const PRODUKCJA_FOLDER_ID = '1r3zjtvSfPa36a1q_GG9giDaNtmtPCvew';
   const CSV_DRIVE_FOLDER_ID = '0ALO7nCAWeZ9QUk9PVA';
 
+  const AKCESORIA_SHEET_ID = '1xUYJb8WGiEsOcvBaUgfSjGlUwGMVb-1E-aQz0bjeeaE';
+
+  const fetchAkcesoriaKatalog = async () => {
+    if (akcesoriaKatalog.length > 0) return; // already loaded
+    setAkcesoriaKatalogLoading(true);
+    try {
+      const url = 'https://docs.google.com/spreadsheets/d/' + AKCESORIA_SHEET_ID + '/gviz/tq?tqx=out:csv&sheet=Sheet1';
+      const resp = await fetch(url);
+      const text = await resp.text();
+      const rows = text.split('\n').slice(1).map(r => {
+        const cols = r.split(',').map(c => c.replace(/^"|"$/g, '').trim());
+        return { nazwa: cols[0] || '', kod: cols[1] || '' };
+      }).filter(r => r.nazwa);
+      setAkcesoriaKatalog(rows);
+    } catch(e) {
+      console.error('Blad pobierania katalogu akcesoriow:', e);
+    } finally {
+      setAkcesoriaKatalogLoading(false);
+    }
+  };
+
   const setOrderMsg = (orderId, msg, autoClose = true) => {
     setUploadMessage(msg); // keep global for CSV section
     // Also store per-order message
@@ -1053,11 +1079,54 @@ export default function App() {
             history: [historyEntry('Import z Prestashop (Excel)')]
           });
         }
+        // Auto-routing: konsultacje / próbki
+        const produktyStr = String(row['Produkty'] || '').toLowerCase().trim();
+        const isOnlyKonsultacje = produktyStr.includes('zdalna pomoc w konfiguracji mebla') &&
+          !parseProduktyFromRaw(String(row['Produkty'] || '')).some(p => !p.name.toLowerCase().includes('zdalna pomoc'));
+        const isOnlyProbki = parseProduktyFromRaw(String(row['Produkty'] || '')).length > 0 &&
+          parseProduktyFromRaw(String(row['Produkty'] || '')).every(p => p.name.toLowerCase().includes('próbka') || p.name.toLowerCase().includes('probka'));
+
+        if (isOnlyKonsultacje || isOnlyProbki) {
+          const type = isOnlyKonsultacje ? 'Konsultacje' : 'Próbki';
+          const choice = window.confirm(
+            'Zamówienie #' + orderId + ' zawiera tylko: ' + (isOnlyKonsultacje ? '"Zdalna pomoc w konfiguracji mebla"' : 'produkty typu Próbka') +
+            '\n\nOK = Przenieś do ' + type +
+            '\nAnuluj = Pozostaw w Prestashop'
+          );
+          if (choice) {
+            const targetRef = isOnlyKonsultacje
+              ? { inKonsultacje: true, inPrestashop: false }
+              : { inProbki: true, inPrestashop: false };
+            const existOrder = orders.find(o => o.id === orderId);
+            if (existOrder) {
+              await updateDoc(doc(db, 'orders', existOrder.docId), { ...targetRef, history: [...(existOrder.history || []), historyEntry('Auto-przeniesiono do ' + type)] });
+            } else {
+              await addDoc(collection(db, 'orders'), {
+                id: orderId, status: 'none', createdAt: new Date().toISOString(),
+                problems: [], photoCount: 0, photoArchived: false,
+                ...targetRef,
+                prestashopData: {
+                  dataDodania: toDisplayDate(String(row['Data dodania'] || '')),
+                  dataRealizacji: String(row['Data Realizacji'] || ''),
+                  transport: String(row['Transport'] || ''),
+                  wartosc: String(row['Wartość zamówienia'] || ''),
+                  kodPocztowy: String(row['Kod pocztowy klienta'] || ''),
+                  produkty: String(row['Produkty'] || ''),
+                  dekoryRaw: String(row['Dekory'] || '')
+                },
+                history: [historyEntry('Import z Excel → ' + type)]
+              });
+            }
+            added++;
+            continue;
+          }
+        }
+
         added++;
       }
-      alert(`✅ Import zakończony: ${added} dodanych, ${skipped} pominiętych (już w systemie)`);
+      alert('Import zakończony: ' + added + ' dodanych, ' + skipped + ' pominiętych (już w systemie)');
     } catch (err) {
-      alert('❌ Błąd importu: ' + err.message);
+      alert('Błąd importu: ' + err.message);
     } finally { setImportingExcel(false); }
   };
 
@@ -1581,9 +1650,13 @@ export default function App() {
   const trudnyKlientOrders = orders.filter(o => o.trudnyKlient && !o.trudnyKlientArchived).sort(sortByNum);
   const getOrderDekorCount = (o) => {
     if (o.colorCountExclHdf > 0) return o.colorCountExclHdf;
-    // fallback: count dekory from excel
+    // fallback: count dekory from excel, exclude HDF
     if (o.prestashopData?.dekoryRaw) {
-      try { return getUniqueDekory(parseDekoryFromExcel(o.prestashopData.dekoryRaw)).length; } catch(e) { return 0; }
+      try {
+        return getUniqueDekory(parseDekoryFromExcel(o.prestashopData.dekoryRaw))
+          .filter(d => !d.name.toLowerCase().includes('hdf'))
+          .length;
+      } catch(e) { return 0; }
     }
     return 0;
   };
@@ -1612,6 +1685,8 @@ export default function App() {
 
   const prestashopSorted = orders.filter(o => o.inPrestashop && !o.movedToProduction);
   const wydaneNaProdukcjeOrders = orders.filter(o => o.wydaneNaProdukcje).sort(sortByKanapka);
+  const konsultacjeOrders = orders.filter(o => o.inKonsultacje && !o.konsultacjeArchived);
+  const probkiOrders = orders.filter(o => o.inProbki && !o.probkiArchived);
   const planowanieOrders = orders.filter(o => o.inPlanowanie && !o.planowanieArchived).sort((a, b) => {
     const aSpak = (a.spakowane || false) ? 1 : 0;
     const bSpak = (b.spakowane || false) ? 1 : 0;
@@ -1632,6 +1707,8 @@ export default function App() {
     if (a.prestashop || a.prestashop_manage || a.prestashop_poprawione) tabs.push('prestashop');
     if (a.wydane_na_produkcje || a.wydane_na_produkcje_manage) tabs.push('wydane_na_produkcje');
     if (a.planowanie) tabs.push('planowanie');
+    if (a.konsultacje) tabs.push('konsultacje');
+    if (a.probki) tabs.push('probki');
     if (a.wydane || a.wydane_manage) tabs.push('wydane');
     if (a.akcesoria) tabs.push('akcesoria');
     if (a.orders || a.orders_manage) tabs.push('orders');
@@ -1685,7 +1762,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.7</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.8</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1703,6 +1780,8 @@ export default function App() {
           <div className="tabs">
             {visibleTabs.includes('prestashop') && <button className={`tab-btn ${activeTab === 'prestashop' ? 'active' : ''}`} onClick={() => { setActiveTab('prestashop'); setSearchQuery(''); }}>🛒 Prestashop</button>}
             {visibleTabs.includes('wydane_na_produkcje') && <button className={`tab-btn ${activeTab === 'wydane_na_produkcje' ? 'active' : ''}`} onClick={() => { setActiveTab('wydane_na_produkcje'); setSearchQuery(''); }}>🏭 Wydane PS</button>}
+            {visibleTabs.includes('konsultacje') && <button className={`tab-btn ${activeTab === 'konsultacje' ? 'active' : ''}`} onClick={() => { setActiveTab('konsultacje'); setSearchQuery(''); }}>💬 Konsultacje</button>}
+            {visibleTabs.includes('probki') && <button className={`tab-btn ${activeTab === 'probki' ? 'active' : ''}`} onClick={() => { setActiveTab('probki'); setSearchQuery(''); }}>🎨 Próbki</button>}
             {visibleTabs.includes('planowanie') && <button className={`tab-btn ${activeTab === 'planowanie' ? 'active' : ''}`} onClick={() => { setActiveTab('planowanie'); setSearchQuery(''); }}>📅 Planowanie</button>}
             {visibleTabs.includes('wydane') && <button className={`tab-btn ${activeTab === 'wydane' ? 'active' : ''}`} onClick={() => { setActiveTab('wydane'); setSearchQuery(''); }}>🔧 Wydane</button>}
             {visibleTabs.includes('akcesoria') && <button className={`tab-btn ${activeTab === 'akcesoria' ? 'active' : ''}`} onClick={() => { setActiveTab('akcesoria'); setSearchQuery(''); }}>🧩 Akcesoria</button>}
@@ -1751,104 +1830,178 @@ export default function App() {
                       </div>
                       {selectedOrderId === order.id && (
                         <div className="card" style={{ borderLeft: '3px solid #4caf50' }}>
-                          {/* INFO: pełne dane z Prestashop — tylko podgląd */}
-                          <div style={{ background: '#f9f9f9', borderRadius: '6px', padding: '10px', marginBottom: '10px', fontSize: '13px' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px' }}>
-                              <div><strong>Nr zamówienia:</strong> {order.id}</div>
-                              <div><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
-                              <div><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
-                              <div><strong>Transport:</strong> {ps.transport || '—'}</div>
-                              <div><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
-                              <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy || '—'}</div>
-                              <div><strong>Paleta:</strong> {order.paletaPrestashop || '—'}</div>
-                              <div><strong>Formatki:</strong> {order.totalFormats || '—'}</div>
-                              {order.longestElement > 0 && <div><strong>Najdłuższy element:</strong> {order.longestElement} mm</div>}
-                              {order.colorCountExclHdf > 0 && <div><strong>Kolory (bez HDF):</strong> {order.colorCountExclHdf}</div>}
-                              {order.hasNoDrilling && <div style={{ gridColumn: '1/-1', color: '#ff6f00', fontWeight: 'bold' }}>⚠️ BRAK NAWIERTÓW</div>}
-                              {order.brakAkcesoriow && <div style={{ gridColumn: '1/-1', color: '#c62828' }}><strong>❌ Brak akcesoriów — potwierdzone</strong></div>}
-                              {order.trudnyKlient && <div style={{ gridColumn: '1/-1', color: '#c62828' }}><strong>⚠️ Trudny klient</strong></div>}
-                            </div>
-                            {ps.uwagi && <div style={{ marginTop: '6px' }}><strong>Uwagi:</strong> {ps.uwagi}</div>}
-                            {order.prestashopUwagi && <div style={{ marginTop: '4px' }}><strong>Uwagi PS:</strong> {order.prestashopUwagi}</div>}
-                            <div style={{ marginTop: '6px', fontSize: '11px', color: '#999' }}>
-                              Wydano: {order.wydaneNaProdukcjeAt ? new Date(order.wydaneNaProdukcjeAt).toLocaleString('pl-PL') : '—'} przez {order.wydaneNaProdukcjeBy || '?'}
-                            </div>
+                          {/* === WYDANE PS: identyczny widok jak PS, bez edycji === */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '11px', color: '#4caf50', fontWeight: 'bold' }}>🏭 Wydano: {order.wydaneNaProdukcjeAt ? new Date(order.wydaneNaProdukcjeAt).toLocaleString('pl-PL') : '—'} przez {order.wydaneNaProdukcjeBy || '?'}</span>
                           </div>
 
-                          {/* Kolory CSV */}
-                          {order.csvData && order.csvData.length > 0 && (
-                            <div style={{ marginBottom: '10px' }}>
-                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>🎨 Kolory ({order.csvData.length}):</div>
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                {order.csvData.map((c, i) => (
-                                  <span key={i} style={{ background: '#e8eaf6', border: '1px solid #c5cae9', borderRadius: '4px', padding: '2px 6px', fontSize: '10px' }}>
-                                    {c.colorName} {c.surfaceArea > 0 ? c.surfaceArea + 'm²' : ''}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Kanapka + pozycja — edytowalne tylko tutaj */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
-                            <div>
-                              <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '2px' }}>🥪 Numer kanapki:</label>
-                              <input type="text" defaultValue={order.kanapka || ''} placeholder="np. K123 lub R45"
-                                onBlur={e => { if (e.target.value !== (order.kanapka || '')) handleUpdateOrderField(order.id, 'kanapka', e.target.value); }}
-                                style={{ width: '100%', padding: '5px' }} />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '2px' }}>📍 Pozycja na kanapce:</label>
-                              <input type="text" defaultValue={order.kanapkaPozycja || ''} placeholder="np. 1, 2, 3..."
-                                onBlur={e => { if (e.target.value !== (order.kanapkaPozycja || '')) handleUpdateOrderField(order.id, 'kanapkaPozycja', e.target.value); }}
-                                style={{ width: '100%', padding: '5px' }} />
-                            </div>
+                          {/* Dane podstawowe — identyczne jak PS */}
+                          <div style={{ fontSize: '13px', marginBottom: '8px' }}>
+                            <div><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
+                            <div><strong>Transport:</strong> {ps.transport || '—'}</div>
+                            <div><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'} {ps.dataRealizacji && <span style={{ background: '#ffecb3', padding: '1px 5px', borderRadius: '3px', fontSize: '12px' }}>🔒</span>}</div>
+                            <div><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
+                            <div><strong>Kod pocztowy:</strong> {ps.kodPocztowy || '—'}</div>
                           </div>
 
-                          {/* Akcesoria (raporty) */}
-                          {order.accessoryLinks && (order.accessoryLinks.okucLink || order.accessoryLinks.ciecieLink) && (
-                            <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
-                              <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Akcesoria (raporty):</div>
-                              {order.accessoryLinks.okucLink ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a> : null}
-                              {order.accessoryLinks.ciecieLink ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a> : null}
-                            </div>
-                          )}
-
-                          {/* Produkty */}
+                          {/* Produkty — identyczne jak PS */}
                           {order.prestashopData?.produkty && (() => {
                             const rows = parseProduktyFromRaw(order.prestashopData.produkty);
                             if (!rows.length) return null;
                             return (
-                              <div style={{ marginBottom: '8px' }}>
-                                <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📦 Produkty:</div>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                                  <thead><tr style={{ background: '#f5f5f5' }}>
-                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'left' }}>Nazwa</th>
-                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Szt.</th>
-                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Wys</th>
-                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Szer</th>
-                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Gł</th>
-                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Link</th>
-                                  </tr></thead>
-                                  <tbody>{rows.map((r, i) => {
-                                    const lnk = (order.prestashopData?.produktyLinks || [])[i] || '';
-                                    return (<tr key={i}>
-                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd' }}>{r.name}</td>
-                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.qty}</td>
-                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.wys||'—'}</td>
-                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.szer||'—'}</td>
-                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.gl||'—'}</td>
-                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{lnk ? <a href={lnk} target="_blank" rel="noreferrer" style={{ color: '#1976d2', fontSize: '11px' }}>🔗</a> : '—'}</td>
-                                    </tr>);
-                                  })}</tbody>
+                              <div style={{ marginBottom: '1rem' }}>
+                                <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📦 Produkty w zamówieniu:</div>
+                                <div style={{ overflowX: 'auto' }}>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                                    <thead>
+                                      <tr style={{ background: '#f5f5f5' }}>
+                                        <th style={{ padding: '4px 6px', textAlign: 'left', border: '1px solid #ddd' }}>Nazwa produktu</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>Ilość</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>Wys. mm</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>Szer. mm</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>Gł. mm</th>
+                                        <th style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>Link</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {rows.map((row, idx) => {
+                                        const savedLink = (order.prestashopData?.produktyLinks || [])[idx] || '';
+                                        return (
+                                          <tr key={idx} style={{ borderBottom: '1px solid #eee' }}>
+                                            <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{row.name}</td>
+                                            <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.qty}</td>
+                                            <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.wys || '—'}</td>
+                                            <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.szer || '—'}</td>
+                                            <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.gl || '—'}</td>
+                                            <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>
+                                              {savedLink ? <a href={savedLink} target="_blank" rel="noreferrer" style={{ color: '#1976d2', fontSize: '11px' }}>🔗 otwórz</a> : '—'}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {/* Najdłuższy element */}
+                          {order.longestElement > 0 && (
+                            <div style={{ background: '#e3f2fd', padding: '8px', borderRadius: '4px', marginBottom: '1rem', fontSize: '14px', fontWeight: 'bold' }}>
+                              📏 Najdłuższy element: {order.longestElement} mm
+                            </div>
+                          )}
+
+                          {/* Tabela CSV kolorów */}
+                          {order.csvData && order.csvData.length > 0 && (() => {
+                            const totalFormats2 = order.csvData.reduce((s, c) => s + (c.formatCount || 0), 0);
+                            const totalArea = order.csvData.reduce((s, c) => s + (c.surfaceArea || 0), 0);
+                            return (
+                              <div style={{ marginBottom: '1rem' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                  <thead>
+                                    <tr style={{ background: '#f5f5f5' }}>
+                                      <th style={{ padding: '6px', textAlign: 'left', border: '1px solid #ddd' }}>Kolor</th>
+                                      <th style={{ padding: '6px', textAlign: 'center', border: '1px solid #ddd' }}>Formatki</th>
+                                      <th style={{ padding: '6px', textAlign: 'center', border: '1px solid #ddd' }}>m²</th>
+                                      <th style={{ padding: '6px', textAlign: 'center', border: '1px solid #ddd' }}>Okl. MB</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {order.csvData.map((color, idx) => (
+                                      <tr key={idx} style={{ borderBottom: '1px solid #eee' }}>
+                                        <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{color.isCountertop ? 'blat_' : ''}{color.colorName}</td>
+                                        <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{color.formatCount || 0}</td>
+                                        <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{(color.surfaceArea || 0).toFixed(3)} m²</td>
+                                        <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{(color.edgeMeters || 0).toFixed(2)} mb</td>
+                                      </tr>
+                                    ))}
+                                    <tr style={{ background: '#f5f5f5', fontWeight: 'bold' }}>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>RAZEM</td>
+                                      <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{totalFormats2}</td>
+                                      <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{totalArea.toFixed(3)} m²</td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}></td>
+                                    </tr>
+                                  </tbody>
                                 </table>
                               </div>
                             );
                           })()}
 
+                          {/* Paleta */}
+                          {order.paletaPrestashop && (
+                            <div style={{ marginBottom: '1rem' }}>
+                              <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>🎨 Paleta:</div>
+                              <div style={{ fontSize: '14px' }}>{order.paletaPrestashop}</div>
+                            </div>
+                          )}
+
+                          {/* Checkboxy status — tylko podgląd */}
+                          <div style={{ display: 'flex', gap: '12px', marginBottom: '1rem', opacity: 0.7 }}>
+                            <label style={{ fontSize: '13px' }}><input type="checkbox" checked={order.zaprojektowane || false} readOnly disabled /> Zaprojektowane</label>
+                            <label style={{ fontSize: '13px' }}><input type="checkbox" checked={order.sprawdzone || false} readOnly disabled /> Sprawdzone</label>
+                            {order.bledy && <label style={{ fontSize: '13px' }}><input type="checkbox" checked={order.bledy || false} readOnly disabled /> Błędy</label>}
+                          </div>
+
+                          {/* Uwagi — tylko podgląd */}
+                          {order.prestashopUwagi && (
+                            <div style={{ marginBottom: '1rem' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 'bold' }}>📝 Uwagi:</div>
+                              <div style={{ fontSize: '13px', background: '#f9f9f9', padding: '6px', borderRadius: '4px' }}>{order.prestashopUwagi}</div>
+                            </div>
+                          )}
+
+                          {/* Kolory sprawdzone */}
+                          {order.colorChecked && (
+                            <div style={{ background: '#e8f5e9', border: '1px solid #4caf50', borderRadius: '6px', padding: '8px', marginBottom: '1rem', fontSize: '13px', fontWeight: 'bold' }}>✅ Kolory sprawdzone</div>
+                          )}
+
+                          {/* Akcesoria (raporty) */}
+                          {order.accessoryLinks && (order.accessoryLinks.okucLink || order.accessoryLinks.ciecieLink) && (
+                            <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '8px', padding: '10px', marginBottom: '8px' }}>
+                              <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📎 Akcesoria (raporty):</div>
+                              {order.accessoryLinks.okucLink ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a> : null}
+                              {order.accessoryLinks.ciecieLink ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a> : null}
+                            </div>
+                          )}
+
+                          {/* Brak akcesoriów info */}
+                          {order.brakAkcesoriow && (
+                            <div style={{ background: '#fff3e0', border: '1px solid #ff9800', borderRadius: '6px', padding: '8px', marginBottom: '8px', fontSize: '13px' }}>❌ Brak akcesoriów — potwierdzone</div>
+                          )}
+
+                          {/* Pliki produkcyjne A_ B_ */}
+                          {order.accessoryLinks && (order.accessoryLinks.aFile || order.accessoryLinks.bFile) && (
+                            <div style={{ background: '#e8eaf6', border: '1px solid #9fa8da', borderRadius: '8px', padding: '10px', marginBottom: '8px' }}>
+                              <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>🗂️ Pliki produkcyjne:</div>
+                              {order.accessoryLinks.aFile ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#283593' }}>📁 A_{order.id}</a> : null}
+                              {order.accessoryLinks.bFile ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#283593' }}>📁 B_{order.id}</a> : null}
+                            </div>
+                          )}
+
+                          {/* Dodaj plik produkcyjny */}
+                          <div style={{ background: '#e0f2f1', border: '1px solid #80cbc4', borderRadius: '8px', padding: '10px', marginBottom: '8px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📤 Dodaj plik produkcyjny:</div>
+                            {accessToken
+                              ? <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, PRODUKCJA_FOLDER_ID); e.target.value = ''; }} style={{ fontSize: '12px' }} />
+                              : <button className="btn btn-primary" onClick={handleAuthorizeGoogle} style={{ fontSize: '12px' }}>🔐 Autoryzuj Drive</button>}
+                            {(order.attachments || []).filter(a => a.type === 'produkcyjny' || !a.type).map((att, idx) => (
+                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', padding: '4px 8px', borderRadius: '4px', marginTop: '4px', fontSize: '11px' }}>
+                                <a href={att.driveLink || '#'} target="_blank" rel="noreferrer" style={{ color: '#00695c' }}>📄 {att.name}</a>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Uwagi produkcyjne — edytowalne */}
+                          <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Uwagi produkcyjne:</label>
+                            <textarea defaultValue={order.uwagiProdukcyjne || ''} onBlur={e => { if (e.target.value !== (order.uwagiProdukcyjne || '')) handleUpdateOrderField(order.id, 'uwagiProdukcyjne', e.target.value); }} placeholder="Uwagi do produkcji..." style={{ width: '100%', height: '50px' }} />
+                          </div>
+
                           {/* Cofnij do Prestashop */}
                           {canManage && (
-                            <button className="btn btn-danger" onClick={() => handleCofnijDoPrestashop(order.id)} disabled={isLoading} style={{ width: '100%', marginTop: '8px', fontSize: '12px' }}>↩️ Cofnij do Prestashop</button>
+                            <button className="btn btn-danger" onClick={() => handleCofnijDoPrestashop(order.id)} disabled={isLoading} style={{ width: '100%', fontSize: '12px' }}>↩️ Cofnij do Prestashop i edytuj</button>
                           )}
 
                           {/* Historia */}
@@ -1872,6 +2025,66 @@ export default function App() {
               </div>
             );
           })()}
+
+          {activeTab === 'konsultacje' && (
+            <div>
+              <h2>💬 Konsultacje ({konsultacjeOrders.length})</h2>
+              <div className="search-box"><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj..." /></div>
+              {konsultacjeOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
+                const ps = order.prestashopData || {};
+                return (
+                  <React.Fragment key={order.docId}>
+                    <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                        {ps.dataRealizacji && <span style={{ fontSize: '13px' }}>📅 {ps.dataRealizacji}</span>}
+                        {ps.transport && <span style={{ fontSize: '11px', color: '#666' }}>{ps.transport.substring(0, 40)}</span>}
+                      </div>
+                    </div>
+                    {selectedOrderId === order.id && (
+                      <div className="card">
+                        <div style={{ fontSize: '13px' }}><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
+                        <div style={{ fontSize: '13px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
+                        <div style={{ fontSize: '13px' }}><strong>Transport:</strong> {ps.transport || '—'}</div>
+                        <div style={{ fontSize: '13px' }}><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
+                        <div style={{ fontSize: '13px', marginTop: '6px' }}><strong>Produkty:</strong> {ps.produkty || '—'}</div>
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+
+          {activeTab === 'probki' && (
+            <div>
+              <h2>🎨 Próbki ({probkiOrders.length})</h2>
+              <div className="search-box"><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj..." /></div>
+              {probkiOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
+                const ps = order.prestashopData || {};
+                return (
+                  <React.Fragment key={order.docId}>
+                    <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                        {ps.dataRealizacji && <span style={{ fontSize: '13px' }}>📅 {ps.dataRealizacji}</span>}
+                        {ps.transport && <span style={{ fontSize: '11px', color: '#666' }}>{ps.transport.substring(0, 40)}</span>}
+                      </div>
+                    </div>
+                    {selectedOrderId === order.id && (
+                      <div className="card">
+                        <div style={{ fontSize: '13px' }}><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
+                        <div style={{ fontSize: '13px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
+                        <div style={{ fontSize: '13px' }}><strong>Transport:</strong> {ps.transport || '—'}</div>
+                        <div style={{ fontSize: '13px' }}><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
+                        <div style={{ fontSize: '13px', marginTop: '6px' }}><strong>Produkty:</strong> {ps.produkty || '—'}</div>
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
 
           {/* ===== PLANOWANIE PRODUKCJI ===== */}
           {activeTab === 'planowanie' && (() => {
@@ -2063,6 +2276,27 @@ export default function App() {
           {activeTab === 'akcesoria' && (
             <div>
               <h2>🧩 Akcesoria ({akcesoriaOrders.length})</h2>
+              <button className="btn" onClick={() => {
+                const allBraki = [];
+                akcesoriaOrders.forEach(o => {
+                  if (!o.brakiMagazynowe) return;
+                  (o.brakiList || []).filter(b => !b.zamowione && !b.uzupelnione).forEach(b => {
+                    const existing = allBraki.find(x => x.kod === b.kod && x.nazwa === b.nazwa);
+                    if (existing) {
+                      existing.ilosc = (parseFloat(existing.ilosc) || 0) + (parseFloat(b.ilosc) || 0);
+                    } else {
+                      allBraki.push({ nazwa: b.nazwa, kod: b.kod || '', ilosc: parseFloat(b.ilosc) || 1 });
+                    }
+                  });
+                });
+                if (!allBraki.length) { alert('Brak aktywnych braków do zliczenia.'); return; }
+                const lines = ['Nazwa;Kod;Ilość', ...allBraki.map(b => b.nazwa + ';' + b.kod + ';' + b.ilosc)];
+                const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'braki_akcesoriow.txt'; a.click();
+                URL.revokeObjectURL(url);
+              }} style={{ fontSize: '12px', marginBottom: '8px' }}>📥 Zlicz brakujące akcesoria</button>
 
               {uploadMessage && <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>{uploadMessage}</div>}
 
@@ -2197,13 +2431,47 @@ export default function App() {
                           };
                           return (
                             <div>
-                              <button className="btn btn-primary" onClick={async () => {
-                                const nazwa = window.prompt('Nazwa brakującego akcesorium:');
-                                if (!nazwa || !nazwa.trim()) return;
-                                const ilosc = window.prompt('Ilość:');
-                                if (!ilosc || !ilosc.trim()) return;
-                                aktualizujBraki([...braki, { nazwa: nazwa.trim(), ilosc: ilosc.trim(), zamowione: false, uzupelnione: false }]);
-                              }} style={{ fontSize: '11px', padding: '3px 8px', marginBottom: '6px' }}>+ Dodaj brak</button>
+                              <button className="btn btn-primary" onClick={() => { fetchAkcesoriaKatalog(); setBrakiSearchQuery('__open__' + order.id); }} style={{ fontSize: '11px', padding: '3px 8px', marginBottom: '6px' }}>+ Dodaj brak</button>
+                              {brakiSearchQuery.startsWith('__open__' + order.id) && (
+                                <div style={{ background: '#fff', border: '1px solid #ddd', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
+                                  <input type="text" autoFocus placeholder="Szukaj nazwy lub kodu..." value={brakiSearchQuery.replace('__open__' + order.id, '').replace('__', '')}
+                                    onChange={e => setBrakiSearchQuery('__open__' + order.id + '__' + e.target.value)}
+                                    style={{ width: '100%', padding: '5px', marginBottom: '6px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '12px' }} />
+                                  {akcesoriaKatalogLoading && <p style={{ fontSize: '11px', color: '#999' }}>Ładowanie...</p>}
+                                  <div style={{ maxHeight: '160px', overflow: 'auto' }}>
+                                    {(() => {
+                                      const q = (brakiSearchQuery.split('__').pop() || '').toLowerCase();
+                                      const filtered2 = q ? akcesoriaKatalog.filter(a => a.nazwa.toLowerCase().includes(q) || a.kod.toLowerCase().includes(q)) : akcesoriaKatalog;
+                                      if (filtered2.length === 0 && q) {
+                                        return (
+                                          <div>
+                                            <p style={{ fontSize: '11px', color: '#999' }}>Nie znaleziono — możesz dodać ręcznie:</p>
+                                            <button className="btn" onClick={() => {
+                                              const il = window.prompt('Ilość:');
+                                              if (!il) return;
+                                              aktualizujBraki([...braki, { nazwa: q, kod: '', ilosc: il.trim(), zamowione: false, uzupelnione: false }]);
+                                              setBrakiSearchQuery('');
+                                            }} style={{ fontSize: '11px' }}>+ Dodaj ręcznie</button>
+                                          </div>
+                                        );
+                                      }
+                                      return filtered2.slice(0, 30).map((a, ai) => (
+                                        <div key={ai} onClick={() => {
+                                          const il = window.prompt('Ilość dla: ' + a.nazwa + ' (' + a.kod + '):');
+                                          if (!il) return;
+                                          aktualizujBraki([...braki, { nazwa: a.nazwa, kod: a.kod, ilosc: il.trim(), zamowione: false, uzupelnione: false }]);
+                                          setBrakiSearchQuery('');
+                                        }} style={{ padding: '4px 6px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '11px' }}
+                                          onMouseEnter={e => e.currentTarget.style.background = '#e3f2fd'}
+                                          onMouseLeave={e => e.currentTarget.style.background = ''}>
+                                          <strong>{a.nazwa}</strong> <span style={{ color: '#666' }}>{a.kod}</span>
+                                        </div>
+                                      ));
+                                    })()}
+                                  </div>
+                                  <button className="btn" onClick={() => setBrakiSearchQuery('')} style={{ fontSize: '10px', marginTop: '4px' }}>✕ Zamknij</button>
+                                </div>
+                              )}
                               {braki.length > 0 && (
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
                                   <thead>
@@ -2218,6 +2486,7 @@ export default function App() {
                                     {braki.filter(b => !b.uzupelnione).map((b, i) => (
                                       <tr key={i} style={{ background: b.zamowione ? '#e8f5e9' : '#fff' }}>
                                         <td style={{ padding: '3px 5px', border: '1px solid #ddd' }}>{b.nazwa}</td>
+                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', fontSize: '10px', color: '#666' }}>{b.kod || '—'}</td>
                                         <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{b.ilosc}</td>
                                         <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
                                           <input type="checkbox" checked={b.zamowione || false} onChange={() => {
