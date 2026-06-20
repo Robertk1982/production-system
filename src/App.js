@@ -956,7 +956,24 @@ export default function App() {
           await updateDoc(orderRef, {
             inPrestashop: true,
             prestashopData: {
-              dataDodania: (() => { const d = row['Data dodania']; if (!d) return ''; if (d instanceof Date) return d.toLocaleDateString('pl-PL'); const s = String(d); return s.includes('-') ? s.substring(0,10).split('-').reverse().join('.') : s.substring(0,10); })(),
+              dataDodania: (() => {
+                const d = row['Data dodania'];
+                if (!d) return '';
+                // Excel serial number (e.g. 46150.9319) -> date
+                if (typeof d === 'number' || (!isNaN(Number(d)) && String(d).includes('.'))) {
+                  const n = typeof d === 'number' ? d : Number(d);
+                  const msPerDay = 86400000;
+                  const excelEpoch = new Date(1899, 11, 30);
+                  const dt = new Date(excelEpoch.getTime() + Math.floor(n) * msPerDay);
+                  return dt.toLocaleDateString('pl-PL');
+                }
+                if (d instanceof Date) return d.toLocaleDateString('pl-PL');
+                const s = String(d);
+                // Remove time part if present
+                const datePart = s.split(' ')[0].split('T')[0];
+                if (datePart.includes('-')) return datePart.split('-').reverse().join('.');
+                return datePart;
+              })(),
               dataRealizacji: String(row['Data Realizacji'] || ''),
               transport: String(row['Transport'] || ''),
               wartosc: String(row['Wartość zamówienia'] || ''),
@@ -970,7 +987,24 @@ export default function App() {
             problems: [], photoCount: 0, photoArchived: false,
             inPrestashop: true,
             prestashopData: {
-              dataDodania: (() => { const d = row['Data dodania']; if (!d) return ''; if (d instanceof Date) return d.toLocaleDateString('pl-PL'); const s = String(d); return s.includes('-') ? s.substring(0,10).split('-').reverse().join('.') : s.substring(0,10); })(),
+              dataDodania: (() => {
+                const d = row['Data dodania'];
+                if (!d) return '';
+                // Excel serial number (e.g. 46150.9319) -> date
+                if (typeof d === 'number' || (!isNaN(Number(d)) && String(d).includes('.'))) {
+                  const n = typeof d === 'number' ? d : Number(d);
+                  const msPerDay = 86400000;
+                  const excelEpoch = new Date(1899, 11, 30);
+                  const dt = new Date(excelEpoch.getTime() + Math.floor(n) * msPerDay);
+                  return dt.toLocaleDateString('pl-PL');
+                }
+                if (d instanceof Date) return d.toLocaleDateString('pl-PL');
+                const s = String(d);
+                // Remove time part if present
+                const datePart = s.split(' ')[0].split('T')[0];
+                if (datePart.includes('-')) return datePart.split('-').reverse().join('.');
+                return datePart;
+              })(),
               dataRealizacji: String(row['Data Realizacji'] || ''),
               transport: String(row['Transport'] || ''),
               wartosc: String(row['Wartość zamówienia'] || ''),
@@ -1112,17 +1146,44 @@ export default function App() {
           }
         }
         const hasNoAcc = !okucLink && !ciecieLink;
+        let confirmedBrakAcc = false;
         if (hasNoAcc) {
-          const userChoice = window.confirm('Czy jestes pewny, ze w zamowieniu nie ma akcesoriow?\n\nOK = Brak akcesoriow\nAnuluj = Sa akcesoria - uzupelnie katalog CSV i ponowie probe');
-          if (!userChoice) {
-            setUploadMessage('Uzupelnij katalog CSV z plikami akcesoriow i pobierz CSV ponownie.');
+          const ok1 = window.confirm('Czy w zamówieniu nie ma akcesoriów?\n\nOK = Tak, nie ma akcesoriów\nAnuluj = W zamówieniu są akcesoria, zapomniano dodać plik — uzupełnię i pobiorę CSV ponownie');
+          if (!ok1) {
+            // User says there ARE accessories — abort CSV load entirely
+            const orderRef2 = doc(db, 'orders', order.docId);
+            await updateDoc(orderRef2, {
+              csvLoaded: false, csvData: [], totalFormats: 0, hasNoDrilling: false,
+              colorCountExclHdf: 0, longestElement: 0, dekoryNeedCheck: false,
+              accessoryLinks: null,
+              history: [...(order.history || []), historyEntry('Przerwano pobieranie CSV — użytkownik wskazał brak pliku akcesoriów w katalogu')]
+            });
+            setUploadMessage('❌ Pobieranie CSV anulowane. Uzupełnij pliki w katalogu i spróbuj ponownie.');
+            setIsLoading(false);
             return;
           }
+          // User confirms no accessories — double confirm
+          const ok2 = window.confirm('Czy jesteś pewien że w zamówieniu nie powinno być akcesoriów i bierzesz odpowiedzialność za ewentualne nie dołożenie ich do zamówienia?\n\nOK = Tak, potwierdzam\nAnuluj = Cofnij');
+          if (!ok2) {
+            const orderRef2 = doc(db, 'orders', order.docId);
+            await updateDoc(orderRef2, {
+              csvLoaded: false, csvData: [], totalFormats: 0, hasNoDrilling: false,
+              colorCountExclHdf: 0, longestElement: 0, dekoryNeedCheck: false,
+              accessoryLinks: null,
+              history: [...(order.history || []), historyEntry('Przerwano pobieranie CSV — cofnięto potwierdzenie braku akcesoriów')]
+            });
+            setUploadMessage('❌ Pobieranie CSV anulowane.');
+            setIsLoading(false);
+            return;
+          }
+          confirmedBrakAcc = true;
         }
-        await updateDoc(orderRef, {
+        const accUpdates = {
           accessoryLinks: { okucLink, ciecieLink, aFile, bFile },
           history: [...(order.history || []), historyEntry('Linki plikow: akcesoria=' + (hasNoAcc ? 'brak' : 'tak') + ', A=' + (aFile ? 'tak' : 'brak') + ', B=' + (bFile ? 'tak' : 'brak'))]
-        });
+        };
+        if (confirmedBrakAcc) accUpdates.brakAkcesoriow = true;
+        await updateDoc(orderRef, accUpdates);
         setUploadMessage('CSV pobrane' + (autoPaleta ? ' | Paleta: ' + autoPaleta : '') + (hasNoAcc ? ' | Brak akcesoriow' : ' | Akcesoria: OK') + ([aFile && 'A_' + orderId, bFile && 'B_' + orderId].filter(Boolean).length ? ' | Prod: ' + [aFile && 'A_' + orderId, bFile && 'B_' + orderId].filter(Boolean).join(', ') : ''));
       }
     } catch (err) {
@@ -1356,14 +1417,13 @@ export default function App() {
     const order = orders.find(o => o.id === orderId);
     if (!order) return;
 
-    // Final gate check
     if (!canMoveToProduction(order)) {
       const missing = canMoveToProductionReasons(order);
-      alert(`❌ Nie można wydać na produkcję.\nBrakuje: ${missing.join(', ')}`);
+      alert('Nie mozna wydac na produkcje. Brakuje: ' + missing.join(', '));
       return;
     }
 
-    if (!window.confirm(`Przenieść zamówienie #${orderId} na produkcję?`)) return;
+    if (!window.confirm('Przeniesc zamowienie #' + orderId + ' na produkcje?')) return;
 
     try {
       const orderRef = doc(db, 'orders', order.docId);
@@ -1372,18 +1432,40 @@ export default function App() {
         wydaneNaProdukcje: true,
         wydaneNaProdukcjeAt: new Date().toISOString(),
         wydaneNaProdukcjeBy: currentUser?.name || currentUser?.email || '?',
-        history: [...(order.history || []), historyEntry('Wydano na produkcję (Prestashop)')]
+        // NIE dodajemy inPlanowanie — planowanie jest osobnym krokiem
+        history: [...(order.history || []), historyEntry('Wydano na produkcje (Prestashop)')]
       };
 
-      // Auto-add to akcesoria if not brakAkcesoriow
-      if (!order.brakAkcesoriow && !order.inAkcesoria) {
+      // Do akcesoriów tylko jeśli nie ma potwierdzonego braku akcesoriów
+      if (!order.brakAkcesoriow) {
         updates.inAkcesoria = true;
       }
 
       await updateDoc(orderRef, updates);
-      alert(`✅ Zamówienie #${orderId} wydane na produkcję`);
+      alert('Zamowienie #' + orderId + ' wydane na produkcje');
     } catch (err) {
-      alert('Błąd: ' + err.message);
+      alert('Blad: ' + err.message);
+    }
+  };
+
+  const handleCofnijDoPrestashop = async (orderId) => {
+    const pwd = window.prompt('Podaj hasło aby cofnąć zamówienie do Prestashop:');
+    if (pwd !== 'FlexM') { alert('Nieprawidłowe hasło.'); return; }
+    if (!window.confirm('Czy na pewno cofnąć zamówienie #' + orderId + ' do Prestashop? Będzie można je edytować.')) return;
+    try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      const orderRef = doc(db, 'orders', order.docId);
+      await updateDoc(orderRef, {
+        movedToProduction: false,
+        wydaneNaProdukcje: false,
+        wydaneNaProdukcjeAt: null,
+        wydaneNaProdukcjeBy: null,
+        inAkcesoria: false,
+        history: [...(order.history || []), historyEntry('Cofnieto do Prestashop (haslo FlexM) przez ' + (currentUser?.name || currentUser?.email || '?'))]
+      });
+    } catch (err) {
+      alert('Blad: ' + err.message);
     }
   };
 
@@ -1619,12 +1701,41 @@ export default function App() {
                             </div>
                           )}
 
-                          {/* Upload do folderu produkcji */}
+                          {/* Produkty */}
+                          {order.prestashopData?.produkty && (() => {
+                            const rows = parseProduktyFromRaw(order.prestashopData.produkty);
+                            if (!rows.length) return null;
+                            return (
+                              <div style={{ marginBottom: '8px' }}>
+                                <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📦 Produkty:</div>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                                  <thead><tr style={{ background: '#f5f5f5' }}>
+                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'left' }}>Nazwa</th>
+                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Szt.</th>
+                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Wys</th>
+                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Szer</th>
+                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Gł</th>
+                                    <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Link</th>
+                                  </tr></thead>
+                                  <tbody>{rows.map((r, i) => {
+                                    const lnk = (order.prestashopData?.produktyLinks || [])[i] || '';
+                                    return (<tr key={i}>
+                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd' }}>{r.name}</td>
+                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.qty}</td>
+                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.wys||'—'}</td>
+                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.szer||'—'}</td>
+                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.gl||'—'}</td>
+                                      <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{lnk ? <a href={lnk} target="_blank" rel="noreferrer" style={{ color: '#1976d2', fontSize: '11px' }}>🔗</a> : '—'}</td>
+                                    </tr>);
+                                  })}</tbody>
+                                </table>
+                              </div>
+                            );
+                          })()}
+
+                          {/* Cofnij do Prestashop */}
                           {canManage && (
-                            <div style={{ marginBottom: '8px' }}>
-                              <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📤 Dodaj plik produkcyjny:</label>
-                              <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, PRODUKCJA_FOLDER_ID); e.target.value = ''; }} style={{ fontSize: '12px' }} />
-                            </div>
+                            <button className="btn btn-danger" onClick={() => handleCofnijDoPrestashop(order.id)} disabled={isLoading} style={{ width: '100%', marginTop: '8px', fontSize: '12px' }}>↩️ Cofnij do Prestashop</button>
                           )}
 
                           {/* Historia */}
@@ -1883,23 +1994,46 @@ export default function App() {
                   {selectedOrderId === order.id && (
                     <div className="card" style={{ borderLeft: '3px solid #9c27b0' }}>
 
-                      {/* Linki do akcesoriów PDF */}
-                      {order.accessoryLinks && (
-                        <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '1rem' }}>
-                          <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Pliki akcesoriów:</div>
-                          {order.accessoryLinks.okucLink
-                            ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a>
-                            : null}
-                          {order.accessoryLinks.ciecieLink
-                            ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a>
-                            : null}
-                          {!order.accessoryLinks.okucLink && !order.accessoryLinks.ciecieLink
-                            ? <span style={{ fontSize: '12px', color: '#888' }}>🚫 Brak akcesoriów</span>
-                            : null}
-                          {order.accessoryLinks.aFile ? <a href={order.accessoryLinks.aFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 A_{order.id}</a> : null}
-                          {order.accessoryLinks.bFile ? <a href={order.accessoryLinks.bFile} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#4a148c' }}>📁 B_{order.id}</a> : null}
+                      {/* Akcesoria raporty — tylko okuc i ciecie */}
+                      {order.accessoryLinks && (order.accessoryLinks.okucLink || order.accessoryLinks.ciecieLink) && (
+                        <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Akcesoria (raporty):</div>
+                          {order.accessoryLinks.okucLink ? <a href={order.accessoryLinks.okucLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL-01_Raport_okuc_skrocony.pdf</a> : null}
+                          {order.accessoryLinks.ciecieLink ? <a href={order.accessoryLinks.ciecieLink} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: '12px', color: '#7b1fa2' }}>📄 PL_Ciecie_dluzycy.pdf</a> : null}
                         </div>
                       )}
+
+                      {/* Produkty z aktywnymi linkami */}
+                      {order.prestashopData?.produkty && (() => {
+                        const rows = parseProduktyFromRaw(order.prestashopData.produkty);
+                        if (!rows.length) return null;
+                        return (
+                          <div style={{ background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📦 Produkty w zamówieniu:</div>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                              <thead><tr style={{ background: '#f5f5f5' }}>
+                                <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'left' }}>Nazwa</th>
+                                <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Szt.</th>
+                                <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Wys</th>
+                                <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Szer</th>
+                                <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Gł</th>
+                                <th style={{ padding: '3px 5px', border: '1px solid #ddd' }}>Link</th>
+                              </tr></thead>
+                              <tbody>{rows.map((r, i) => {
+                                const lnk = (order.prestashopData?.produktyLinks || [])[i] || '';
+                                return (<tr key={i}>
+                                  <td style={{ padding: '3px 5px', border: '1px solid #ddd' }}>{r.name}</td>
+                                  <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.qty}</td>
+                                  <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.wys||'—'}</td>
+                                  <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.szer||'—'}</td>
+                                  <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{r.gl||'—'}</td>
+                                  <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{lnk ? <a href={lnk} target="_blank" rel="noreferrer" style={{ color: '#1976d2', fontSize: '11px' }}>🔗</a> : '—'}</td>
+                                </tr>);
+                              })}</tbody>
+                            </table>
+                          </div>
+                        );
+                      })()}
 
                       <div style={{ marginBottom: '1rem' }}>
                         <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Braki / uwagi:</label>
@@ -1971,10 +2105,20 @@ export default function App() {
                                           }} />
                                         </td>
                                         <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                          <input type="checkbox" checked={b.uzupelnione || false} onChange={() => {
-                                            const nb = braki.map((x, j) => j === i ? { ...x, uzupelnione: true } : x);
-                                            aktualizujBraki(nb);
-                                          }} />
+                                          <input type="checkbox" checked={b.uzupelnione || false}
+                                            disabled={!b.zamowione}
+                                            title={!b.zamowione ? 'Najpierw zaznacz Zamówione' : ''}
+                                            onChange={async () => {
+                                              const nb = braki.map((x, j) => j === i ? { ...x, uzupelnione: true } : x);
+                                              const allDone = nb.every(x => x.uzupelnione);
+                                              const orderRef2 = doc(db, 'orders', order.docId);
+                                              await updateDoc(orderRef2, {
+                                                brakiList: nb,
+                                                // Gdy wszystkie uzupełnione — ukryj brakiMagazynowe
+                                                ...(allDone ? { brakiMagazynowe: false } : {}),
+                                                history: [...(order.history || []), historyEntry('Uzupelniono brak: ' + b.nazwa)]
+                                              });
+                                            }} />
                                         </td>
                                       </tr>
                                     ))}
@@ -2145,26 +2289,40 @@ export default function App() {
                                           <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.szer || '—'}</td>
                                           <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>{row.gl || '—'}</td>
                                           <td style={{ padding: '4px 6px', textAlign: 'center', border: '1px solid #ddd' }}>
-                                            {row.link
-                                              ? <a href={row.link} target="_blank" rel="noreferrer" style={{ color: '#1976d2', fontSize: '11px' }}>🔗 otwórz</a>
-                                              : <input type="text" placeholder="wklej link..." defaultValue=""
-                                                  onBlur={e => {
-                                                    const val = e.target.value.trim();
-                                                    if (val) {
-                                                      const newRows = parseProduktyFromRaw(order.prestashopData.produkty);
-                                                      newRows[idx].link = val;
-                                                      const newPs = { ...(order.prestashopData || {}), produktyLinks: (order.prestashopData.produktyLinks || []).map((l, i) => i === idx ? val : l).concat(newRows.slice((order.prestashopData.produktyLinks || []).length).map((r, i) => i === idx - (order.prestashopData.produktyLinks || []).length ? val : '')) };
-                                                      newPs.produktyLinks = newRows.map((r, i) => i === idx ? val : ((order.prestashopData.produktyLinks || [])[i] || ''));
+                                            {(() => {
+                                              const savedLink = (order.prestashopData?.produktyLinks || [])[idx] || '';
+                                              return savedLink
+                                                ? <a href={savedLink} target="_blank" rel="noreferrer" style={{ color: '#1976d2', fontSize: '11px' }}>🔗 otwórz</a>
+                                                : <input type="text" placeholder="wklej link..." defaultValue=""
+                                                    onBlur={e => {
+                                                      const val = e.target.value.trim();
+                                                      if (!val) return;
+                                                      const rows2 = parseProduktyFromRaw(order.prestashopData?.produkty || '');
+                                                      const links = [...(order.prestashopData?.produktyLinks || Array(rows2.length).fill(''))];
+                                                      while (links.length < rows2.length) links.push('');
+                                                      links[idx] = val;
+                                                      const newPs = { ...(order.prestashopData || {}), produktyLinks: links };
                                                       handleUpdateOrderField(order.id, 'prestashopData', newPs);
-                                                    }
-                                                  }}
-                                                  style={{ fontSize: '10px', width: '80px', padding: '2px' }} />}
+                                                    }}
+                                                    style={{ fontSize: '10px', width: '80px', padding: '2px' }} />;
+                                            })()}
                                           </td>
                                         </tr>
                                       ))}
                                     </tbody>
                                   </table>
                                 </div>
+                              <button className="btn" onClick={() => {
+                                const nazwa = window.prompt('Nazwa produktu:'); if (!nazwa) return;
+                                const qty = window.prompt('Ilość:', '1'); if (!qty) return;
+                                const wys = window.prompt('Wysokość (mm):', '');
+                                const szer = window.prompt('Szerokość (mm):', '');
+                                const gl = window.prompt('Głębokość (mm):', '');
+                                const manualEntry = qty + ' x ' + nazwa + ' (wys. ' + (wys||'-') + 'mm | szer. ' + (szer||'-') + 'mm | gl. ' + (gl||'-') + 'mm)';
+                                const existing = order.prestashopData?.produkty || '';
+                                const newPs = { ...(order.prestashopData || {}), produkty: existing ? existing + ' ' + manualEntry : manualEntry };
+                                handleUpdateOrderField(order.id, 'prestashopData', newPs);
+                              }} style={{ fontSize: '11px', marginTop: '6px' }}>+ Dodaj produkt</button>
                               </div>
                             );
                           })()}
@@ -2393,23 +2551,30 @@ export default function App() {
                             )}
                           </div>
 
-                          {/* BRAK AKCESORIÓW — checkbox potwierdzenia */}
+                          {/* BRAK AKCESORIÓW — checkbox z hasłem FlexM */}
                           {order.csvLoaded && (
                             <div style={{ background: order.brakAkcesoriow ? '#fff3e0' : '#f5f5f5', border: '1px solid ' + (order.brakAkcesoriow ? '#ff9800' : '#ddd'), borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
-                              <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                <input type="checkbox" checked={order.brakAkcesoriow || false}
+                              <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', cursor: order.brakAkcesoriow ? 'default' : 'pointer' }}>
+                                <input type="checkbox" checked={order.brakAkcesoriow || false} readOnly={order.brakAkcesoriow}
                                   onChange={async () => {
-                                    if (!order.brakAkcesoriow) {
-                                      const ok = window.confirm('Czy jestes pewien, ze w zamowieniu nie ma akcesoriow?\n\nOK = Tak, potwierdzam brak akcesoriow\nAnuluj = W zamowieniu sa akcesoria, uzupelnie katalog i pobiorę CSV ponownie');
-                                      if (!ok) return;
-                                    }
+                                    if (order.brakAkcesoriow) return; // nie można odklikać ręcznie
+                                    // Wymaga hasła
+                                    const pwd = window.prompt('Podaj hasło aby potwierdzić brak akcesoriów:');
+                                    if (pwd !== 'FlexM') { alert('Nieprawidłowe hasło.'); return; }
+                                    // Podwójne potwierdzenie
+                                    const ok1 = window.confirm('Czy w zamowieniu nie ma akcesoriow?\n\nOK = Tak, nie ma akcesoriow\nAnuluj = W zamowieniu sa akcesoria');
+                                    if (!ok1) return;
+                                    const ok2 = window.confirm('Czy jestes pewien ze w zamowieniu nie powinno byc akcesoriow i bierzesz odpowiedzialnosc za ewentualne nie dolozenie ich do zamowienia?');
+                                    if (!ok2) return;
                                     const orderRef2 = doc(db, 'orders', order.docId);
-                                    await updateDoc(orderRef2, { brakAkcesoriow: !order.brakAkcesoriow, history: [...(order.history || []), historyEntry(!order.brakAkcesoriow ? 'Potwierdzono brak akcesoriow' : 'Cofnieto brak akcesoriow')] });
+                                    await updateDoc(orderRef2, { brakAkcesoriow: true, history: [...(order.history || []), historyEntry('Ręcznie potwierdzono brak akcesoriów (hasło FlexM)')] });
                                   }}
                                 />
                                 <span style={{ fontWeight: 'bold' }}>❌ Brak akcesoriów w zamówieniu</span>
+                                {order.brakAkcesoriow && <span style={{ fontSize: '10px', color: '#999' }}>(zablokowane)</span>}
                               </label>
                               {order.brakAkcesoriow && <p style={{ fontSize: '11px', color: '#e65100', margin: '4px 0 0' }}>Zamówienie nie trafi do katalogu Akcesoria po wydaniu na produkcję.</p>}
+                              {!order.brakAkcesoriow && <p style={{ fontSize: '11px', color: '#999', margin: '4px 0 0' }}>Zaznaczenie wymaga hasła i podwójnego potwierdzenia.</p>}
                             </div>
                           )}
 
