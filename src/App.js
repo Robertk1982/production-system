@@ -29,8 +29,6 @@ const ACCESS_FOLDERS = [
   { key: 'planowanie', label: 'Planowanie produkcji' },
   { key: 'konsultacje', label: 'Konsultacje' },
   { key: 'probki', label: 'Próbki' },
-  { key: 'wydane', label: 'Wydane na produkcję (widok)' },
-  { key: 'wydane_manage', label: 'Wydane na produkcję (zarządzanie)' },
   { key: 'akcesoria', label: 'Akcesoria' },
   { key: 'prestashop', label: 'Prestashop (widok)' },
   { key: 'prestashop_manage', label: 'Prestashop (zarządzanie)' },
@@ -234,7 +232,7 @@ export default function App() {
       setAppState('dashboard');
       // Reset to first available tab for THIS user
       const a = getUserAccess(user);
-      const firstTab = (a.prestashop || a.prestashop_manage || a.prestashop_poprawione) ? 'prestashop' : (a.wydane || a.wydane_manage) ? 'wydane' : a.akcesoria ? 'akcesoria' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.trudny_klient ? 'trudny_klient' : a.admin ? 'admin' : 'orders';
+      const firstTab = (a.prestashop || a.prestashop_manage || a.prestashop_poprawione) ? 'prestashop' : a.akcesoria ? 'akcesoria' : (a.orders || a.orders_manage) ? 'orders' : a.ready ? 'ready' : a.pallet ? 'pallet' : a.dedicated ? 'dedicated' : a.photos ? 'photos' : (a.raben || a.raben_manage) ? 'raben' : (a.transport || a.transport_manage) ? 'transport' : a.archive3 ? 'archive3' : a.archive2 ? 'archive2' : a.archive1 ? 'archive1' : a.trudny_klient ? 'trudny_klient' : a.admin ? 'admin' : 'orders';
       setActiveTab(firstTab);
     } else {
       alert('Błędne dane logowania');
@@ -1850,7 +1848,7 @@ export default function App() {
     if (a.planowanie) tabs.push('planowanie');
     if (a.konsultacje) tabs.push('konsultacje');
     if (a.probki) tabs.push('probki');
-    if (a.wydane || a.wydane_manage) tabs.push('wydane');
+
     if (a.akcesoria) tabs.push('akcesoria');
     if (a.orders || a.orders_manage) tabs.push('orders');
     if (a.ready) tabs.push('ready');
@@ -1903,7 +1901,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.20</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.21</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -1924,7 +1922,7 @@ export default function App() {
             {visibleTabs.includes('konsultacje') && <button className={`tab-btn ${activeTab === 'konsultacje' ? 'active' : ''}`} onClick={() => { setActiveTab('konsultacje'); setSearchQuery(''); }}>💬 Konsultacje</button>}
             {visibleTabs.includes('probki') && <button className={`tab-btn ${activeTab === 'probki' ? 'active' : ''}`} onClick={() => { setActiveTab('probki'); setSearchQuery(''); }}>🎨 Próbki</button>}
             {visibleTabs.includes('planowanie') && <button className={`tab-btn ${activeTab === 'planowanie' ? 'active' : ''}`} onClick={() => { setActiveTab('planowanie'); setSearchQuery(''); }}>📅 Planowanie</button>}
-            {visibleTabs.includes('wydane') && <button className={`tab-btn ${activeTab === 'wydane' ? 'active' : ''}`} onClick={() => { setActiveTab('wydane'); setSearchQuery(''); }}>🔧 Wydane</button>}
+
             {visibleTabs.includes('akcesoria') && <button className={`tab-btn ${activeTab === 'akcesoria' ? 'active' : ''}`} onClick={() => { setActiveTab('akcesoria'); setSearchQuery(''); }}>🧩 Akcesoria</button>}
             {visibleTabs.includes('orders') && <button className={`tab-btn ${activeTab === 'orders' ? 'active' : ''}`} onClick={() => { setActiveTab('orders'); setSearchQuery(''); }}>📦 Zamówienia</button>}
             {visibleTabs.includes('ready') && <button className={`tab-btn ${activeTab === 'ready' ? 'active' : ''}`} onClick={() => { setActiveTab('ready'); setSearchQuery(''); }}>📋 Gotowe</button>}
@@ -2591,16 +2589,16 @@ export default function App() {
                         <WyprodukujTabela items={pilne} isPilne={true} />
                       </div>
                     )}
-                    {(niepilne.length > 0 || zamowActive.length > 0) && (
+                    {true && (
                       <div>
-                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#555', marginBottom: '4px' }}>📋 Do wyprodukowania:</div>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#555', marginBottom: '4px' }}>📋 Niepilne:</div>
                         <WyprodukujTabela items={niepilne} isPilne={false} />
                         {/* Zamów próbki (nie pilne) — w tej samej tabelce */}
                         {zamowActive.length > 0 && (
                           <div style={{ marginTop: '4px' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                               <span style={{ fontSize: '11px', color: '#666', fontStyle: 'italic' }}>Ręcznie dodane do wyprodukowania:</span>
-                              <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowZamowProbki(!showZamowProbki); }} style={{ fontSize: '10px', padding: '2px 6px' }}>+ Dodaj</button>
+                              <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowZamowProbki(s => !s); }} style={{ fontSize: '10px', padding: '2px 6px' }}>{showZamowProbki ? '✕' : '+ Dodaj'}</button>
                             </div>
                             {showZamowProbki && (
                               <div style={{ position: 'relative', marginBottom: '6px' }}>
@@ -3014,122 +3012,6 @@ export default function App() {
               </div>
             );
           })()}
-
-          {activeTab === 'wydane' && (
-            <div>
-              <h2>🔧 Wydane na produkcję ({wydaneOrders.length})</h2>
-              {getUserAccess(currentUser).wydane_manage && (
-                <div className="card">
-                  <h3>Dodaj zamówienie</h3>
-                  <input type="text" value={wydaneOrderNum} onChange={e => setWydaneOrderNum(e.target.value)} placeholder="Numer zamówienia" style={{ width: '100%', marginBottom: '0.5rem' }} />
-                  <input type="text" value={wydaneKanapka} onChange={e => setWydaneKanapka(e.target.value)} placeholder="Numer kanapki (opcjonalnie)" style={{ width: '100%', marginBottom: '0.5rem' }} />
-                  <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>📅 Termin realizacji:</label>
-                  <input type="date" value={wydaneTermin} onChange={e => setWydaneTermin(e.target.value)} style={{ width: '100%', marginBottom: '0.5rem' }} />
-                  <button className="btn btn-success" onClick={handleAddWydane} disabled={isLoading} style={{ width: '100%' }}>Dodaj</button>
-                </div>
-              )}
-
-              {uploadMessage && <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>{uploadMessage}</div>}
-
-              <div className="search-box">
-                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj zamówienia..." />
-              </div>
-              {wydaneOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).length === 0 && <p style={{ color: '#999' }}>Brak zamówień</p>}
-              {wydaneOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
-                const canManageW = getUserAccess(currentUser).wydane_manage;
-                const canEditKanapka = canManageW || (!order.kanapkaSetByManage && !order.kanapka);
-                return (
-                <React.Fragment key={order.docId}>
-                  <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <h3 style={{ margin: '0 0 2px 0' }}>#{order.id}</h3>
-                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                          {order.kanapka ? <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#333' }}>🥪 {order.kanapka}</span> : <span style={{ fontSize: '14px', color: '#f44336' }}>⚠️ Brak kanapki</span>}
-                          {order.inAkcesoria && <span style={{ fontSize: '13px', color: '#388e3c' }} title="W akcesoriach">✅ akc.</span>}
-                          {order.attachments?.length > 0 && <span style={{ fontSize: '13px', color: '#666' }} title="Załączniki">📎 {order.attachments.length}</span>}
-                          {order.terminRealizacji && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#1976d2' }} title="Termin realizacji">📅 {order.terminRealizacji}</span>}
-                          {order.brakAkcesoriow && <span style={{ fontSize: '13px', background: '#ffebee', color: '#c62828', padding: '2px 6px', borderRadius: '4px' }} title="Brak akcesoriów">❌ brak akces.</span>}
-                          {order.trudnyKlient && <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#c62828', background: '#ffebee', padding: '2px 8px', borderRadius: '4px' }}>⚠️ TK</span>}
-                        </div>
-                      </div>
-                      <span style={{ fontSize: '18px' }}>{selectedOrderId === order.id ? '▲' : '▼'}</span>
-                    </div>
-                  </div>
-                  {selectedOrderId === order.id && (
-                    <div className="card" style={{ borderLeft: '3px solid #ff9800' }}>
-                      <div style={{ marginBottom: '1rem' }}>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📅 Termin realizacji:</label>
-                        {!order.terminRealizacji ? (
-                          <input type="date" value="" onChange={e => handleUpdateOrderField(order.id, 'terminRealizacji', e.target.value)} style={{ width: '100%' }} />
-                        ) : dateEditOrderId === 'termin_' + order.id ? (
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <input type="date" defaultValue={order.terminRealizacji} onChange={e => handleSaveTerminEdit(order.id, e.target.value)} style={{ flex: 1 }} />
-                            <button className="btn" onClick={() => setDateEditOrderId(null)} style={{ padding: '4px 8px', fontSize: '11px' }}>Anuluj</button>
-                          </div>
-                        ) : (
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <span style={{ fontWeight: 'bold', fontSize: '16px' }}>{order.terminRealizacji}</span>
-                            <button className="btn" onClick={() => handlePasswordTerminEdit(order.id)} style={{ padding: '4px 8px', fontSize: '11px' }}>🔒 Zmień</button>
-                          </div>
-                        )}
-                      </div>
-
-                      <div style={{ marginBottom: '1rem' }}>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>🥪 Numer kanapki:</label>
-                        {canEditKanapka ? (
-                          <input type="text" value={order.kanapka || ''} onChange={e => { handleUpdateOrderField(order.id, 'kanapka', e.target.value); if (canManageW) handleUpdateOrderField(order.id, 'kanapkaSetByManage', true); }} placeholder="K lub R + numer..." style={{ width: '100%', fontSize: '16px', fontWeight: 'bold' }} />
-                        ) : (
-                          <span style={{ fontSize: '16px', fontWeight: 'bold' }}>{order.kanapka || '—'}</span>
-                        )}
-                      </div>
-
-                      <div style={{ marginBottom: '1rem' }}>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📎 Załączniki:</label>
-                        {canManageW && (
-                          <>
-                            {!accessToken ? (
-                              <button className="btn btn-primary" onClick={handleAuthorizeGoogle} disabled={isLoading} style={{ fontSize: '12px', width: '100%', marginBottom: '0.5rem' }}>🔐 Autoryzuj Google Drive</button>
-                            ) : (
-                              <button className="btn btn-primary" onClick={() => attachmentFileInputRef.current?.click()} disabled={isLoading} style={{ fontSize: '12px', marginBottom: '0.5rem' }}>📤 Dodaj plik</button>
-                            )}
-                            <input ref={attachmentFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, WYDANE_FOLDER_ID); e.target.value = ''; }} style={{ display: 'none' }} />
-                          </>
-                        )}
-                        {(order.attachments || []).length === 0 && <p style={{ fontSize: '12px', color: '#999' }}>Brak załączników</p>}
-                        {(order.attachments || []).map((att, idx) => (
-                          <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', padding: '6px 10px', borderRadius: '4px', marginBottom: '4px', fontSize: '12px' }}>
-                            <a href={att.driveLink || '#'} target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>📄 {att.name}</a>
-                            {canManageW && <button className="btn btn-danger" onClick={() => handleDeleteAttachment(order.id, idx)} disabled={isLoading} style={{ padding: '2px 6px', fontSize: '10px' }}>✕</button>}
-                          </div>
-                        ))}
-                      </div>
-
-                      <div style={{ marginBottom: '1rem' }}>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>📝 Braki / uwagi:</label>
-                        <textarea value={order.akcesoriaUwagi || ''} onChange={e => handleUpdateOrderField(order.id, 'akcesoriaUwagi', e.target.value)} placeholder="Braki, uwagi..." style={{ width: '100%', height: '50px' }} />
-                      </div>
-
-                      <div style={{ marginBottom: '1rem' }}>
-                        <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <input type="checkbox" checked={order.brakAkcesoriow || false} onChange={() => handleToggleAkcesoria(order.id, 'brakAkcesoriow')} />
-                          ❌ Brak akcesoriów
-                        </label>
-                      </div>
-
-                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        {canManageW && (
-                          <button className="btn btn-success" onClick={() => handleAddToAkcesoria(order.id)} disabled={isLoading || order.inAkcesoria} style={{ flex: 1 }}>🧩 Dodaj do akcesoriów</button>
-                        )}
-                        <button className="btn btn-danger" onClick={() => handleWyciete(order.id)} disabled={isLoading || !order.kanapka} style={{ flex: 1 }}>✂️ Wycięte</button>
-                      </div>
-                    </div>
-                  )}
-                </React.Fragment>
-                );
-              })}
-            </div>
-          )}
 
           {activeTab === 'akcesoria' && (
             <div>
