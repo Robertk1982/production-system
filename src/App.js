@@ -1858,7 +1858,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.15</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.16</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2377,7 +2377,7 @@ export default function App() {
                   const rows2 = parseProduktyFromRaw(ps2.produkty || '');
                   rows2.forEach((r, i) => {
                     const rs = (ord.probkiRowStatus || [])[i] || {};
-                    if (rs.wyprodukuj && !rs.spakowane) {
+                    if (rs.wyprodukuj) {
                       const dekorNr2 = extractDekorNr(r.name);
                       const dostepne2 = parseInt(magazynProbek[dekorNr2] || 0);
                       // Check total needed across all orders for this dekor
@@ -2654,9 +2654,9 @@ export default function App() {
                             {ps.dataDodania && <span style={{ fontSize: '12px', color: '#666' }}>📅 {ps.dataDodania}</span>}
                             {ps.transport && <span style={{ fontSize: '11px', color: '#888' }}>{ps.transport.substring(0, 30)}</span>}
                             {(allAvail || allDone) && <span title="Można wysłać" style={{ fontSize: '14px' }}>📬</span>}
-                            {!allAvail && !allDone && hasGotowe && <span title="Część próbek gotowa" style={{ fontSize: '14px' }}>✅</span>}
                             {hasZlecone && <span title="Oczekiwanie na produkcję" style={{ fontSize: '14px' }}>⏳</span>}
                             {hasWyprodukuj && <span title="Do wyprodukowania" style={{ fontSize: '14px' }}>🔨</span>}
+                            {!allAvail && !allDone && hasGotowe && !hasZlecone && !hasWyprodukuj && <span title="Część próbek gotowa" style={{ fontSize: '14px' }}>✅</span>}
                             {order.probkiGotowe && !order.probkiWyslane && <span style={{ background: '#e3f2fd', color: '#1565c0', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>📦 gotowe</span>}
                             {order.probkiWyslane && <span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>✅ wysłane</span>}
                           </div>
@@ -2726,7 +2726,9 @@ export default function App() {
                                         )}
                                       </td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                        <input type="checkbox" checked={rs.pomin || false} disabled={rs.spakowane}
+                                        <input type="checkbox" checked={rs.pomin || false}
+                                          disabled={rs.spakowane}
+                                          title={rs.spakowane ? 'Nie można pominąć spakowanej pozycji' : ''}
                                           onChange={() => {
                                             const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
                                             while (ns.length < rows.length) ns.push({});
