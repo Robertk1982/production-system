@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import * as XLSX from 'xlsx';
-import { getFirestore, collection, addDoc, updateDoc, setDoc, doc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, updateDoc, setDoc, getDoc, doc, onSnapshot } from 'firebase/firestore';
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDKUns-Jmw1RR9afnymTKF1xdjImHJGkNU",
@@ -469,6 +469,13 @@ export default function App() {
     const unsub = onSnapshot(doc(db, 'magazyn', 'probki'), snap => {
       if (snap.exists()) setMagazynProbek(snap.data() || {});
     });
+    // Also pre-load probki katalog from Firestore cache silently
+    getDoc(doc(db, 'katalogi', 'probki')).then(snap => {
+      if (snap.exists()) {
+        const cached = snap.data().items || [];
+        if (cached.length > 0) setProbkiKatalog(cached);
+      }
+    }).catch(() => {});
     return unsub;
   }, []);
 
@@ -715,19 +722,54 @@ export default function App() {
   const PROBKI_SHEET_ID = '10yCRrMI88UVkXngxgkmFxEXkpJqL2ZANWJBiWoQFg-M';
   const PROBKI_FOLDER_ID = '1PBQalfDxjuXNmaMU7f3au_lzT3FX0Iqw';
 
-  const fetchProbkiKatalog = async () => {
-    if (probkiKatalog.length > 0) return;
+  const fetchProbkiKatalog = async (force = false) => {
     setProbkiKatalogLoading(true);
     try {
-      const url = 'https://docs.google.com/spreadsheets/d/' + PROBKI_SHEET_ID + '/gviz/tq?tqx=out:csv';
-      const resp = await fetch(url);
-      const text = await resp.text();
-      const rows = text.split('\n').slice(1).map(r => {
-        const cols = r.split(',').map(c => c.replace(/^"|"$/g, '').trim());
-        return { nazwa: cols[0] || '', kod: cols[1] || '' };
-      }).filter(r => r.nazwa);
-      setProbkiKatalog(rows);
-    } catch(e) { console.error('Blad katalogu probek:', e); }
+      // Load from Firestore cache first (fast, no network)
+      const cacheSnap = await getDoc(doc(db, 'katalogi', 'probki'));
+      const cached = cacheSnap.exists() ? (cacheSnap.data().items || []) : [];
+      if (cached.length > 0 && !force) {
+        setProbkiKatalog(cached);
+        setProbkiKatalogLoading(false);
+        return;
+      }
+      // Fetch from Google Sheets via Drive API
+      if (!accessToken) {
+        if (cached.length > 0) { setProbkiKatalog(cached); }
+        else { alert('Autoryzuj Google Drive aby pobrać listę próbek.'); }
+        setProbkiKatalogLoading(false);
+        return;
+      }
+      const exportResp = await fetch(
+        'https://www.googleapis.com/drive/v3/files/' + PROBKI_SHEET_ID + '/export?mimeType=text%2Fcsv',
+        { headers: { Authorization: 'Bearer ' + accessToken } }
+      );
+      if (!exportResp.ok) throw new Error('HTTP ' + exportResp.status);
+      const text = await exportResp.text();
+      const lines = text.split('\n').filter(l => l.trim());
+      const result = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = [];
+        let cur = '', inQ = false;
+        for (const ch of lines[i]) {
+          if (ch === '"') { inQ = !inQ; }
+          else if (ch === ',' && !inQ) { cols.push(cur.trim()); cur = ''; }
+          else { cur += ch; }
+        }
+        cols.push(cur.trim());
+        if (cols[0]) result.push({ nazwa: cols[0], kod: cols[1] || '' });
+      }
+      if (result.length > 0) {
+        // Merge: keep existing, add only new entries
+        const existingNames = new Set(cached.map(e => e.nazwa));
+        const merged = [...cached, ...result.filter(r => !existingNames.has(r.nazwa))];
+        await setDoc(doc(db, 'katalogi', 'probki'), { items: merged, updatedAt: new Date().toISOString() });
+        setProbkiKatalog(merged);
+      }
+    } catch(e) {
+      console.error('Blad katalogu probek:', e);
+      alert('Błąd pobierania: ' + e.message);
+    }
     finally { setProbkiKatalogLoading(false); }
   };
 
@@ -1867,7 +1909,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.10</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.12</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2237,6 +2279,11 @@ export default function App() {
                 <button className="btn btn-primary" onClick={() => { fetchProbkiKatalog(); setShowDodajProbki(!showDodajProbki); setShowMagazyn(false); }} style={{ fontSize: '12px' }}>
                   {showDodajProbki ? '✕ Zamknij' : '➕ Dodaj na magazyn'}
                 </button>
+                {accessToken && (
+                  <button className="btn" onClick={() => fetchProbkiKatalog(true)} disabled={probkiKatalogLoading} style={{ fontSize: '12px' }} title="Pobiera nowe pozycje z arkusza Google, nie nadpisuje istniejących">
+                    {probkiKatalogLoading ? '⏳' : '🔄'} Aktualizuj listę próbek
+                  </button>
+                )}
                 <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowMagazyn(!showMagazyn); setShowDodajProbki(false); }} style={{ fontSize: '12px' }}>
                   {showMagazyn ? '✕ Zamknij' : '📦 Sprawdź stany magazynowe'}
                 </button>
