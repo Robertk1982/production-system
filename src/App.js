@@ -2578,9 +2578,6 @@ export default function App() {
                   <div style={{ background: '#f5f5f5', border: '1px solid #ddd', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                       <h3 style={{ margin: 0 }}>🔨 Do wyprodukowania</h3>
-                      <button className="btn btn-primary" onClick={() => setShowZamowProbki(!showZamowProbki)} style={{ fontSize: '11px' }}>
-                        {showZamowProbki ? '✕' : '📋 Zamów próbki'}
-                      </button>
                     </div>
 
                     {pilne.length > 0 && (
