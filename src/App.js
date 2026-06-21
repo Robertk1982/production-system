@@ -138,6 +138,8 @@ export default function App() {
   const [magazynSearchQ, setMagazynSearchQ] = useState('');
   const [magazynSortBy, setMagazynSortBy] = useState('nazwa');
   const [showPominieteLista, setShowPominieteLista] = useState(false);
+  const [showWyprodukujPanel, setShowWyprodukujPanel] = useState(false);
+  const [wyprodukujZlecone, setWyprodukujZlecone] = useState({});
   const [konsultacjeDataQ, setKonsultacjeDataQ] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -1109,75 +1111,25 @@ export default function App() {
       for (const row of rows) {
         const orderId = String(row['ID Zamówienia'] || '').trim();
         if (!orderId) continue;
-        const existing = orders.find(o => o.id === orderId && o.inPrestashop);
-        if (existing) { skipped++; continue; }
 
-        const existingOrder = orders.find(o => o.id === orderId);
-        if (existingOrder) {
-          const orderRef = doc(db, 'orders', existingOrder.docId);
-          await updateDoc(orderRef, {
-            inPrestashop: true,
-            prestashopData: {
-              dataDodania: (() => {
-                const d = row['Data dodania'];
-                if (!d) return '';
-                // Excel serial number (e.g. 46150.9319) -> date
-                if (typeof d === 'number' || (!isNaN(Number(d)) && String(d).includes('.'))) {
-                  const n = typeof d === 'number' ? d : Number(d);
-                  const msPerDay = 86400000;
-                  const excelEpoch = new Date(1899, 11, 30);
-                  const dt = new Date(excelEpoch.getTime() + Math.floor(n) * msPerDay);
-                  return dt.toLocaleDateString('pl-PL');
-                }
-                if (d instanceof Date) return d.toLocaleDateString('pl-PL');
-                const s = String(d);
-                // Remove time part if present
-                const datePart = s.split(' ')[0].split('T')[0];
-                if (datePart.includes('-')) return datePart.split('-').reverse().join('.');
-                return datePart;
-              })(),
-              dataRealizacji: String(row['Data Realizacji'] || ''),
-              transport: String(row['Transport'] || ''),
-              wartosc: String(row['Wartość zamówienia'] || ''),
-              kodPocztowy: String(row['Kod pocztowy klienta'] || '')
-            },
-            history: [...(existingOrder.history || []), historyEntry('Import z Prestashop (Excel)')]
-          });
-        } else {
-          await addDoc(collection(db, 'orders'), {
-            id: orderId, status: 'none', createdAt: new Date().toISOString(),
-            problems: [], photoCount: 0, photoArchived: false,
-            inPrestashop: true,
-            prestashopData: {
-              dataDodania: (() => {
-                const d = row['Data dodania'];
-                if (!d) return '';
-                // Excel serial number (e.g. 46150.9319) -> date
-                if (typeof d === 'number' || (!isNaN(Number(d)) && String(d).includes('.'))) {
-                  const n = typeof d === 'number' ? d : Number(d);
-                  const msPerDay = 86400000;
-                  const excelEpoch = new Date(1899, 11, 30);
-                  const dt = new Date(excelEpoch.getTime() + Math.floor(n) * msPerDay);
-                  return dt.toLocaleDateString('pl-PL');
-                }
-                if (d instanceof Date) return d.toLocaleDateString('pl-PL');
-                const s = String(d);
-                // Remove time part if present
-                const datePart = s.split(' ')[0].split('T')[0];
-                if (datePart.includes('-')) return datePart.split('-').reverse().join('.');
-                return datePart;
-              })(),
-              dataRealizacji: String(row['Data Realizacji'] || ''),
-              transport: String(row['Transport'] || ''),
-              wartosc: String(row['Wartość zamówienia'] || ''),
-              kodPocztowy: String(row['Kod pocztowy klienta'] || ''),
-              produkty: String(row['Produkty'] || ''),
-              dekoryRaw: String(row['Dekory'] || '')
-            },
-            history: [historyEntry('Import z Prestashop (Excel)')]
-          });
+        // Skip if already in ANY active folder
+        const existingAny = orders.find(o => o.id === orderId);
+        if (existingAny && (existingAny.inPrestashop || existingAny.inKonsultacje || existingAny.inProbki || existingAny.wydaneNaProdukcje)) {
+          skipped++; continue;
         }
-        // Auto-routing: konsultacje / próbki
+
+        // Parse date helper
+        const parseD = (d) => {
+          if (!d) return '';
+          if (typeof d === 'number' || (!isNaN(Number(d)) && String(d).match(/^\d+\.\d+$/))) {
+            const dt = new Date(new Date(1899, 11, 30).getTime() + Math.floor(typeof d === 'number' ? d : Number(d)) * 86400000);
+            return dt.toLocaleDateString('pl-PL');
+          }
+          if (d instanceof Date) return d.toLocaleDateString('pl-PL');
+          const s = String(d).split(' ')[0].split('T')[0];
+          return s.includes('-') ? s.split('-').reverse().join('.') : s;
+        };
+
         const produktyRaw2 = String(row['Produkty'] || '');
         const parsedProds = parseProduktyFromRaw(produktyRaw2);
         const hasProbka = parsedProds.some(p => p.name.toLowerCase().includes('próbka') || p.name.toLowerCase().includes('probka'));
@@ -1185,69 +1137,43 @@ export default function App() {
         const isOnlyZdalna = hasZdalna && parsedProds.every(p => p.name.toLowerCase().includes('zdalna pomoc'));
         const hasOtherThanZdalna = hasZdalna && !isOnlyZdalna;
 
-        const buildPsData2 = () => ({
-          dataDodania: (() => {
-            const d = row['Data dodania'];
-            if (!d) return '';
-            if (typeof d === 'number' || (!isNaN(Number(d)) && String(d).match(/^\d+\.\d+$/))) {
-              const n = typeof d === 'number' ? d : Number(d);
-              const dt = new Date(new Date(1899, 11, 30).getTime() + Math.floor(n) * 86400000);
-              return dt.toLocaleDateString('pl-PL');
-            }
-            if (d instanceof Date) return d.toLocaleDateString('pl-PL');
-            const s = String(d).split(' ')[0].split('T')[0];
-            return s.includes('-') ? s.split('-').reverse().join('.') : s;
-          })(),
+        // Determine target folder BEFORE any save
+        let targetFolder = { inPrestashop: true, inKonsultacje: false, inProbki: false };
+        if (hasProbka) {
+          targetFolder = { inPrestashop: false, inKonsultacje: false, inProbki: true };
+        } else if (isOnlyZdalna) {
+          targetFolder = { inPrestashop: false, inKonsultacje: true, inProbki: false };
+        } else if (hasOtherThanZdalna) {
+          const choice = window.confirm('Zamówienie #' + orderId + ': "Zdalna pomoc" + inne produkty.\n\nOK = Konsultacje\nAnuluj = Prestashop');
+          targetFolder = choice
+            ? { inPrestashop: false, inKonsultacje: true, inProbki: false }
+            : { inPrestashop: true, inKonsultacje: false, inProbki: false };
+        }
+
+        const psData2 = {
+          dataDodania: parseD(row['Data dodania']),
           dataRealizacji: String(row['Data Realizacji'] || ''),
           transport: String(row['Transport'] || ''),
           wartosc: String(row['Wartość zamówienia'] || ''),
           kodPocztowy: String(row['Kod pocztowy klienta'] || ''),
           produkty: produktyRaw2,
           dekoryRaw: String(row['Dekory'] || '')
-        });
-
-        const saveToTarget = async (targetFlags) => {
-          // Zawsze wyłącz inPrestashop gdy trafia do innego folderu
-          const flags = {
-            inPrestashop: false,
-            inKonsultacje: false,
-            inProbki: false,
-            ...targetFlags
-          };
-          const existOrder = orders.find(o => o.id === orderId);
-          if (existOrder) {
-            await updateDoc(doc(db, 'orders', existOrder.docId), { ...flags, prestashopData: buildPsData2(), history: [...(existOrder.history || []), historyEntry('Import → ' + Object.keys(targetFlags).join(','))] });
-          } else {
-            await addDoc(collection(db, 'orders'), { id: orderId, status: 'none', createdAt: new Date().toISOString(), problems: [], photoCount: 0, photoArchived: false, ...flags, prestashopData: buildPsData2(), history: [historyEntry('Import z Excel')] });
-          }
         };
 
-        // Probki: any product with próbka/probka -> auto to probki, no questions
-        if (hasProbka) {
-          await saveToTarget({ inProbki: true, inPrestashop: false });
-          added++;
-          continue;
+        // ONE save with correct folder
+        if (existingAny) {
+          await updateDoc(doc(db, 'orders', existingAny.docId), {
+            ...targetFolder, prestashopData: psData2,
+            history: [...(existingAny.history || []), historyEntry('Import Excel')]
+          });
+        } else {
+          await addDoc(collection(db, 'orders'), {
+            id: orderId, status: 'none', createdAt: new Date().toISOString(),
+            problems: [], photoCount: 0, photoArchived: false,
+            ...targetFolder, prestashopData: psData2,
+            history: [historyEntry('Import Excel')]
+          });
         }
-
-        // Konsultacje: ONLY zdalna -> auto to konsultacje
-        if (isOnlyZdalna) {
-          await saveToTarget({ inKonsultacje: true, inPrestashop: false });
-          added++;
-          continue;
-        }
-
-        // Zdalna + inne produkty -> zapytaj
-        if (hasOtherThanZdalna) {
-          const choice = window.confirm('Zamówienie #' + orderId + ' zawiera "Zdalna pomoc" oraz inne produkty.\n\nOK = Przenieś do Konsultacje\nAnuluj = Pozostaw w Prestashop');
-          if (choice) {
-            await saveToTarget({ inKonsultacje: true, inPrestashop: false });
-          } else {
-            await saveToTarget({ inPrestashop: true });
-          }
-          added++;
-          continue;
-        }
-
         added++;
       }
       alert('Import zakończony: ' + added + ' dodanych, ' + skipped + ' pominiętych (już w systemie)');
@@ -1909,7 +1835,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.12</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.13</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2290,6 +2216,9 @@ export default function App() {
                 <button className="btn" onClick={() => setShowPominieteLista(!showPominieteLista)} style={{ fontSize: '12px' }}>
                   {showPominieteLista ? '✕ Zamknij' : '⏭️ Lista pominiętych'}
                 </button>
+                <button className="btn" onClick={() => setShowWyprodukujPanel(!showWyprodukujPanel)} style={{ fontSize: '12px' }}>
+                  {showWyprodukujPanel ? '✕ Zamknij' : '🔨 Do wyprodukowania'}
+                </button>
               </div>
 
               {/* Panel dodaj na magazyn */}
@@ -2416,6 +2345,62 @@ export default function App() {
                 </div>
               )}
 
+              {/* Panel Do wyprodukowania */}
+              {showWyprodukujPanel && (() => {
+                // Collect all rows with wyprodukuj=true from all probki orders
+                const toWyprodukuj = [];
+                probkiOrders.forEach(ord => {
+                  const ps2 = ord.prestashopData || {};
+                  const rows2 = parseProduktyFromRaw(ps2.produkty || '');
+                  rows2.forEach((r, i) => {
+                    const rs = (ord.probkiRowStatus || [])[i] || {};
+                    if (rs.wyprodukuj && !rs.spakowane) {
+                      const dekorNr2 = extractDekorNr(r.name);
+                      toWyprodukuj.push({ orderId: ord.id, orderDocId: ord.docId, rowIdx: i, name: r.name, qty: r.qty, dekorNr: dekorNr2, key: ord.id + '_' + i });
+                    }
+                  });
+                });
+                return (
+                  <div style={{ background: '#e8f5e9', border: '1px solid #a5d6a7', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
+                    <h3 style={{ margin: '0 0 8px' }}>🔨 Do wyprodukowania ({toWyprodukuj.length} pozycji)</h3>
+                    {toWyprodukuj.length === 0 && <p style={{ fontSize: '12px', color: '#666' }}>Brak zaznaczonych do wyprodukowania.</p>}
+                    {toWyprodukuj.length > 0 && (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', marginBottom: '8px' }}>
+                        <thead><tr style={{ background: '#c8e6c9' }}>
+                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'left' }}>Próbka</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Ilość</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Zamówienie</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Zlecone na prod.</th>
+                        </tr></thead>
+                        <tbody>
+                          {toWyprodukuj.map(item => (
+                            <tr key={item.key} style={{ background: wyprodukujZlecone[item.key] ? '#e8f5e9' : '' }}>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9' }}>{item.name}</td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>{item.qty}</td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>#{item.orderId}</td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
+                                <input type="checkbox" checked={wyprodukujZlecone[item.key] || false}
+                                  onChange={async () => {
+                                    const newVal = !wyprodukujZlecone[item.key];
+                                    setWyprodukujZlecone(prev => ({ ...prev, [item.key]: newVal }));
+                                    // Check if all items for this order are zlecone
+                                    const orderItems = toWyprodukuj.filter(x => x.orderId === item.orderId);
+                                    const allZlecone = orderItems.every(x => x.key === item.key ? newVal : (wyprodukujZlecone[x.key] || false));
+                                    if (allZlecone && newVal) {
+                                      const ord2 = orders.find(o => o.id === item.orderId);
+                                      if (ord2) await handleUpdateOrderField(item.orderId, 'probkiZleconeNaProdukcje', true);
+                                    }
+                                  }} />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Lista pominiętych */}
               {showPominieteLista && (
                 <div style={{ background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
@@ -2502,8 +2487,8 @@ export default function App() {
                                             ns[i] = { ...ns[i], spakowane: newVal, pomin: false };
                                             handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
                                             // Koryguj stan magazynu
-                                            if (dekorNr && newVal) await updateMagazynProbek(dekorNr, -parseInt(r.qty || 1), { type: 'spakowanie', orderId, user: currentUser?.name || currentUser?.email || '?' });
-                                            if (dekorNr && !newVal) await updateMagazynProbek(dekorNr, parseInt(r.qty || 1), { type: 'cofnięcie spakowania', orderId, user: currentUser?.name || currentUser?.email || '?' });
+                                            if (dekorNr && newVal) await updateMagazynProbek(dekorNr, -parseInt(r.qty || 1), { type: 'spakowanie', orderId: order.id, user: currentUser?.name || currentUser?.email || '?' });
+                                            if (dekorNr && !newVal) await updateMagazynProbek(dekorNr, parseInt(r.qty || 1), { type: 'cofniecie spakowania', orderId: order.id, user: currentUser?.name || currentUser?.email || '?' });
                                           }} />
                                       </td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
