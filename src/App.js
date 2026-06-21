@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import * as XLSX from 'xlsx';
-import { getFirestore, collection, addDoc, updateDoc, setDoc, getDoc, doc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, updateDoc, setDoc, getDoc, getDocs, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDKUns-Jmw1RR9afnymTKF1xdjImHJGkNU",
@@ -1554,13 +1554,23 @@ export default function App() {
   };
 
   const handleClearAllOrders = async () => {
-    const pwd = window.prompt('UWAGA: Usunięcie WSZYSTKICH zamówień! Hasło:');
+    const pwd = window.prompt('UWAGA: Usuwa WSZYSTKIE zamówienia, magazyn próbek i katalogi. Hasło:');
     if (pwd !== 'FlexM') { if (pwd !== null) alert('❌ Hasło'); return; }
-    if (!window.confirm('OSTATNIE OSTRZEŻENIE! Usunąć wszystko?')) return;
+    if (!window.confirm('OSTATNIE OSTRZEŻENIE! Usunąć wszystkie dane (zamówienia + magazyn próbek)?')) return;
     try {
       setIsLoading(true);
-      for (const order of orders) { await updateDoc(doc(db, 'orders', order.docId), { deleted: true }); }
-      alert('✅ Dane wyczyszczone');
+      // Delete all orders
+      const ordersSnap = await getDocs(collection(db, 'orders'));
+      for (const d2 of ordersSnap.docs) { await deleteDoc(doc(db, 'orders', d2.id)); }
+      // Clear magazyn probek
+      await setDoc(doc(db, 'magazyn', 'probki'), {});
+      // Clear zamow probki list
+      await setDoc(doc(db, 'magazyn', 'zamowProbki'), { items: [] });
+      // Clear probki katalog cache (keep it as it's from external source)
+      // Reset local state
+      setMagazynProbek({});
+      setZamowProbkiRows([]);
+      alert('✅ Wszystkie dane wyczyszczone');
     } catch (err) { alert('Błąd: ' + err.message); }
     finally { setIsLoading(false); }
   };
@@ -1848,7 +1858,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.14</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.15</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2437,15 +2447,20 @@ export default function App() {
                                 setWyprodukujWyprodukowane(prev => ({ ...prev, [item.key]: true }));
                                 // Add to magazyn
                                 if (item.dekorNr) await updateMagazynProbek(item.dekorNr, ilN, { type: 'wyprodukowanie', orderId: item.orderId, user: currentUser?.name || currentUser?.email || '?' });
-                                // Uncheck wyprodukuj in order
-                                const ord2 = orders.find(o => o.id === item.orderId);
-                                if (ord2) {
+                                // Update all orders with this dekor: wyprodukuj=false, zleconeNaProdukcje=false, gotowe=true
+                                probkiOrders.forEach(async ord2 => {
                                   const rows2 = parseProduktyFromRaw(ord2.prestashopData?.produkty || '');
+                                  const hasDekor = rows2.some(rr => extractDekorNr(rr.name) === item.dekorNr);
+                                  if (!hasDekor) return;
                                   const ns2 = [...(ord2.probkiRowStatus || Array(rows2.length).fill({}))];
                                   while (ns2.length < rows2.length) ns2.push({});
-                                  ns2[item.rowIdx] = { ...ns2[item.rowIdx], wyprodukuj: false };
-                                  await handleUpdateOrderField(item.orderId, 'probkiRowStatus', ns2);
-                                }
+                                  rows2.forEach((rr, ii) => {
+                                    if (extractDekorNr(rr.name) === item.dekorNr) {
+                                      ns2[ii] = { ...ns2[ii], wyprodukuj: false, zleconeNaProdukcje: false, gotowe: true };
+                                    }
+                                  });
+                                  await handleUpdateOrderField(ord2.id, 'probkiRowStatus', ns2);
+                                });
                               }} />
                           </td>
                           {isPilne && (
@@ -2485,14 +2500,19 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Panel zamów próbki */}
-                    {showZamowProbki && (
-                      <div style={{ background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: '6px', padding: '10px', marginBottom: '12px' }}>
-                        <h4 style={{ margin: '0 0 8px' }}>📋 Zamów próbki (nie pilne)</h4>
+                    {/* Panel zamów próbki — zintegrowany w panelu */}
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#e65100' }}>📋 Zamów próbki (nie pilne):</div>
+                        <button className="btn" onClick={() => setShowZamowProbki(!showZamowProbki)} style={{ fontSize: '11px' }}>
+                          {showZamowProbki ? '✕' : '+ Dodaj'}
+                        </button>
+                      </div>
+                      {showZamowProbki && (
                         <div style={{ position: 'relative', marginBottom: '6px' }}>
                           <input type="text" value={zamowProbkiSearchQ} onChange={e => setZamowProbkiSearchQ(e.target.value)}
                             onFocus={() => { if (probkiKatalog.length === 0) fetchProbkiKatalog(); if (!zamowProbkiSearchQ) setZamowProbkiSearchQ(' '); }}
-                            placeholder="Szukaj próbki do zamówienia..."
+                            placeholder="Szukaj próbki..."
                             style={{ width: '100%', padding: '6px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '12px' }} />
                           {zamowProbkiSearchQ.trim() && (
                             <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '150px', overflow: 'auto', zIndex: 10, borderRadius: '4px' }}>
@@ -2502,57 +2522,54 @@ export default function App() {
                                   onMouseLeave={e => e.currentTarget.style.background = ''}
                                   onClick={async () => {
                                     const newList = [...zamowProbkiRows, { nazwa: p.nazwa, dekorNr: extractDekorNr(p.nazwa), addedAt: new Date().toISOString(), user: currentUser?.name || '?' }];
-                                    setZamowProbkiRows(newList);
-                                    await updateZamowProbkiList(newList);
-                                    setZamowProbkiSearchQ('');
-                                  }}>
-                                  {p.nazwa}
-                                </div>
+                                    setZamowProbkiRows(newList); await updateZamowProbkiList(newList); setZamowProbkiSearchQ('');
+                                  }}>{p.nazwa}</div>
                               ))}
                             </div>
                           )}
                         </div>
-                        {zamowProbkiRows.length > 0 && (
-                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', marginTop: '6px' }}>
-                            <thead><tr style={{ background: '#ffe0b2' }}>
-                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'left' }}>Próbka</th>
-                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'center' }}>Zlecone</th>
-                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'center' }}>Wyprod.</th>
-                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'center' }}>Usuń</th>
-                            </tr></thead>
-                            <tbody>
-                              {zamowProbkiRows.map((zr, zi) => (
-                                <tr key={zi}>
-                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2' }}>{zr.nazwa}</td>
-                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2', textAlign: 'center' }}>
-                                    <input type="checkbox" checked={zr.zlecone || false} onChange={async () => {
-                                      const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, zlecone: !x.zlecone } : x);
-                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                    }} />
-                                  </td>
-                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2', textAlign: 'center' }}>
-                                    <input type="checkbox" checked={zr.wyprodukowane || false} onChange={async () => {
-                                      if (zr.wyprodukowane) return;
-                                      const il = window.prompt('Ile sztuk dodać do magazynu? (' + zr.nazwa + ')');
-                                      if (!il || isNaN(parseInt(il))) return;
-                                      if (zr.dekorNr) await updateMagazynProbek(zr.dekorNr, parseInt(il), { type: 'wyprodukowanie-zamow', user: currentUser?.name || '?' });
-                                      const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, wyprodukowane: true } : x);
-                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                    }} />
-                                  </td>
-                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2', textAlign: 'center' }}>
-                                    <button onClick={async () => {
-                                      const nl = zamowProbkiRows.filter((_, j) => j !== zi);
-                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                    }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        )}
-                      </div>
-                    )}
+                      )}
+                      {zamowProbkiRows.length > 0 && (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                          <thead><tr style={{ background: '#ffe0b2' }}>
+                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'left' }}>Próbka</th>
+                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Zlecone</th>
+                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Wyprodukowane</th>
+                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Usuń</th>
+                          </tr></thead>
+                          <tbody>
+                            {zamowProbkiRows.map((zr, zi) => (
+                              <tr key={zi} style={{ background: zr.wyprodukowane ? '#e8f5e9' : '' }}>
+                                <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{zr.nazwa}</td>
+                                <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                  <input type="checkbox" checked={zr.zlecone || false} onChange={async () => {
+                                    const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, zlecone: !x.zlecone } : x);
+                                    setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                  }} />
+                                </td>
+                                <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                  <input type="checkbox" checked={zr.wyprodukowane || false} onChange={async () => {
+                                    if (zr.wyprodukowane) return;
+                                    const il = window.prompt('Ile sztuk dodać do magazynu? (' + zr.nazwa + ')');
+                                    if (!il || isNaN(parseInt(il))) return;
+                                    if (zr.dekorNr) await updateMagazynProbek(zr.dekorNr, parseInt(il), { type: 'wyprodukowanie-zamow', user: currentUser?.name || '?' });
+                                    const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, wyprodukowane: true } : x);
+                                    setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                  }} />
+                                </td>
+                                <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                  <button onClick={async () => {
+                                    const nl = zamowProbkiRows.filter((_, j) => j !== zi);
+                                    setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                  }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                      {zamowProbkiRows.length === 0 && !showZamowProbki && <p style={{ fontSize: '11px', color: '#999', margin: 0 }}>Brak zamówionych próbek</p>}
+                    </div>
 
                     {pilne.length > 0 && (
                       <div style={{ marginBottom: '12px' }}>
@@ -2619,9 +2636,13 @@ export default function App() {
                         return { ...rs2, dostepne: dostepne2, qty: qty2, name: r2.name };
                       });
                       const allDone = allStatuses.length > 0 && allStatuses.every(s => s.spakowane || s.pomin);
-                      const allAvail = allStatuses.length > 0 && allStatuses.every(s => s.spakowane || s.pomin || s.dostepne >= s.qty);
-                      const hasWyprodukuj = allStatuses.some(s => s.wyprodukuj && !s.spakowane && !s.zleconeNaProdukcje);
-                      const hasZlecone = allStatuses.some(s => s.zleconeNaProdukcje && !s.spakowane);
+                      // canSend: all rows either spakowane, pominięte, available enough, or gotowe/korekta
+                      const allAvail = allStatuses.length > 0 && allStatuses.every(s =>
+                        s.spakowane || s.pomin || s.naOczekiwaniu || s.gotowe || s.dostepne >= s.qty
+                      );
+                      const hasWyprodukuj = allStatuses.some(s => s.wyprodukuj && !s.spakowane && !s.zleconeNaProdukcje && !s.gotowe);
+                      const hasZlecone = allStatuses.some(s => s.zleconeNaProdukcje && !s.spakowane && !s.gotowe);
+                      const hasGotowe = allStatuses.some(s => s.gotowe && !s.spakowane);
                       // Auto-check gotowe when all done
                       if (allDone && !order.probkiGotowe) {
                         handleUpdateOrderField(order.id, 'probkiGotowe', true);
@@ -2632,9 +2653,10 @@ export default function App() {
                             <h3 style={{ margin: 0 }}>#{order.id}</h3>
                             {ps.dataDodania && <span style={{ fontSize: '12px', color: '#666' }}>📅 {ps.dataDodania}</span>}
                             {ps.transport && <span style={{ fontSize: '11px', color: '#888' }}>{ps.transport.substring(0, 30)}</span>}
-                            {allAvail && !allDone && <span title="Wszystkie próbki dostępne — można wysłać" style={{ fontSize: '14px' }}>✅</span>}
-                            {hasWyprodukuj && <span title="Zaznaczono do wyprodukowania" style={{ fontSize: '14px' }}>🔨</span>}
-                            {hasZlecone && <span title="Oczekiwanie na próbki — zlecone na produkcję" style={{ fontSize: '14px' }}>⏳</span>}
+                            {(allAvail || allDone) && <span title="Można wysłać" style={{ fontSize: '14px' }}>📬</span>}
+                            {!allAvail && !allDone && hasGotowe && <span title="Część próbek gotowa" style={{ fontSize: '14px' }}>✅</span>}
+                            {hasZlecone && <span title="Oczekiwanie na produkcję" style={{ fontSize: '14px' }}>⏳</span>}
+                            {hasWyprodukuj && <span title="Do wyprodukowania" style={{ fontSize: '14px' }}>🔨</span>}
                             {order.probkiGotowe && !order.probkiWyslane && <span style={{ background: '#e3f2fd', color: '#1565c0', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>📦 gotowe</span>}
                             {order.probkiWyslane && <span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>✅ wysłane</span>}
                           </div>
@@ -2689,6 +2711,8 @@ export default function App() {
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
                                         {rs.naOczekiwaniu ? (
                                           <span style={{ fontSize: '10px', color: '#e65100', fontWeight: 'bold' }} title="Nie będzie teraz zrealizowany — wystaw korektę">⚠️ korekta</span>
+                                        ) : rs.gotowe ? (
+                                          <span style={{ fontSize: '10px', color: '#2e7d32', fontWeight: 'bold' }} title="Wyprodukowane — dostępne na magazynie">✅ gotowe</span>
                                         ) : rs.zleconeNaProdukcje ? (
                                           <span style={{ fontSize: '10px', color: '#1565c0' }} title="Zlecono na produkcję">⏳ zlecone</span>
                                         ) : (
