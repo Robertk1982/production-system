@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import * as XLSX from 'xlsx';
-import { getFirestore, collection, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, updateDoc, setDoc, doc, onSnapshot } from 'firebase/firestore';
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDKUns-Jmw1RR9afnymTKF1xdjImHJGkNU",
@@ -128,6 +128,16 @@ export default function App() {
   const [akcesoriaKatalog, setAkcesoriaKatalog] = useState([]);
   const [akcesoriaKatalogLoading, setAkcesoriaKatalogLoading] = useState(false);
   const [brakiSearchQuery, setBrakiSearchQuery] = useState('');
+  const [probkiKatalog, setProbkiKatalog] = useState([]);
+  const [probkiKatalogLoading, setProbkiKatalogLoading] = useState(false);
+  const [showMagazyn, setShowMagazyn] = useState(false);
+  const [showDodajProbki, setShowDodajProbki] = useState(false);
+  const [dodajProbkiRows, setDodajProbkiRows] = useState([]);
+  const [probkiSearchQ, setProbkiSearchQ] = useState('');
+  const [magazynSearchQ, setMagazynSearchQ] = useState('');
+  const [magazynSortBy, setMagazynSortBy] = useState('nazwa');
+  const [showPominieteLista, setShowPominieteLista] = useState(false);
+  const [konsultacjeDataQ, setKonsultacjeDataQ] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   
   const [newUserName, setNewUserName] = useState('');
@@ -452,6 +462,26 @@ export default function App() {
     }
   };
 
+  // Magazyn próbek — oddzielny dokument w Firestore
+  const [magazynProbek, setMagazynProbek] = React.useState({});
+  React.useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'magazyn', 'probki'), snap => {
+      if (snap.exists()) setMagazynProbek(snap.data() || {});
+    });
+    return unsub;
+  }, []);
+
+  const updateMagazynProbek = async (dekorNr, delta, logEntry) => {
+    const current = parseInt(magazynProbek[dekorNr] || 0);
+    const newVal = Math.max(0, current + delta);
+    const ref = doc(db, 'magazyn', 'probki');
+    await updateDoc(ref, { [dekorNr]: newVal }).catch(() => setDoc(ref, { ...magazynProbek, [dekorNr]: newVal }));
+    // Log to archiwum
+    if (logEntry) {
+      await addDoc(collection(db, 'magazynLog'), { ...logEntry, timestamp: new Date().toISOString(), dekorNr, before: current, after: newVal });
+    }
+  };
+
   const handleAuthorizeGoogle = () => {
     if (!window.google) {
       alert('Google API się ładuje, spróbuj za moment');
@@ -680,6 +710,47 @@ export default function App() {
   const CSV_DRIVE_FOLDER_ID = '0ALO7nCAWeZ9QUk9PVA';
 
   const AKCESORIA_SHEET_ID = '1xUYJb8WGiEsOcvBaUgfSjGlUwGMVb-1E-aQz0bjeeaE';
+
+  const PROBKI_SHEET_ID = '10yCRrMI88UVkXngxgkmFxEXkpJqL2ZANWJBiWoQFg-M';
+  const PROBKI_FOLDER_ID = '1PBQalfDxjuXNmaMU7f3au_lzT3FX0Iqw';
+
+  const fetchProbkiKatalog = async () => {
+    if (probkiKatalog.length > 0) return;
+    setProbkiKatalogLoading(true);
+    try {
+      const url = 'https://docs.google.com/spreadsheets/d/' + PROBKI_SHEET_ID + '/gviz/tq?tqx=out:csv';
+      const resp = await fetch(url);
+      const text = await resp.text();
+      const rows = text.split('\n').slice(1).map(r => {
+        const cols = r.split(',').map(c => c.replace(/^"|"$/g, '').trim());
+        return { nazwa: cols[0] || '', kod: cols[1] || '' };
+      }).filter(r => r.nazwa);
+      setProbkiKatalog(rows);
+    } catch(e) { console.error('Blad katalogu probek:', e); }
+    finally { setProbkiKatalogLoading(false); }
+  };
+
+  // Extract dekor number from product name e.g. "4436 VL" -> "4436", "U335 ST9" -> "335"
+  const extractDekorNr = (name) => {
+    const m = name.match(/[Uu]?([0-9]{3,5})/);
+    return m ? m[1].replace(/^0+/, '') : '';
+  };
+
+  // Get magazyn stan for a dekor (from Firestore collection 'magazynProbek')
+  const getMagazynStan = (dekorNr) => {
+    const key = 'magazyn_' + dekorNr;
+    return parseInt(localStorage.getItem(key) || '0');
+  };
+
+  const getMagazynAll = () => {
+    const result = {};
+    probkiKatalog.forEach(p => {
+      const nr = extractDekorNr(p.nazwa);
+      if (nr) result[nr] = { nazwa: p.nazwa, kod: p.kod, ilosc: 0 };
+    });
+    // Read from orders (magazynProbek field in a special doc)
+    return result;
+  };
 
   const fetchAkcesoriaKatalog = async () => {
     if (akcesoriaKatalog.length > 0) return; // already loaded
@@ -1088,7 +1159,18 @@ export default function App() {
         const hasOtherThanZdalna = hasZdalna && !isOnlyZdalna;
 
         const buildPsData2 = () => ({
-          dataDodania: toDisplayDate(String(row['Data dodania'] || '')),
+          dataDodania: (() => {
+            const d = row['Data dodania'];
+            if (!d) return '';
+            if (typeof d === 'number' || (!isNaN(Number(d)) && String(d).match(/^\d+\.\d+$/))) {
+              const n = typeof d === 'number' ? d : Number(d);
+              const dt = new Date(new Date(1899, 11, 30).getTime() + Math.floor(n) * 86400000);
+              return dt.toLocaleDateString('pl-PL');
+            }
+            if (d instanceof Date) return d.toLocaleDateString('pl-PL');
+            const s = String(d).split(' ')[0].split('T')[0];
+            return s.includes('-') ? s.split('-').reverse().join('.') : s;
+          })(),
           dataRealizacji: String(row['Data Realizacji'] || ''),
           transport: String(row['Transport'] || ''),
           wartosc: String(row['Wartość zamówienia'] || ''),
@@ -1098,11 +1180,18 @@ export default function App() {
         });
 
         const saveToTarget = async (targetFlags) => {
+          // Zawsze wyłącz inPrestashop gdy trafia do innego folderu
+          const flags = {
+            inPrestashop: false,
+            inKonsultacje: false,
+            inProbki: false,
+            ...targetFlags
+          };
           const existOrder = orders.find(o => o.id === orderId);
           if (existOrder) {
-            await updateDoc(doc(db, 'orders', existOrder.docId), { ...targetFlags, prestashopData: buildPsData2(), history: [...(existOrder.history || []), historyEntry('Auto-import → ' + JSON.stringify(targetFlags))] });
+            await updateDoc(doc(db, 'orders', existOrder.docId), { ...flags, prestashopData: buildPsData2(), history: [...(existOrder.history || []), historyEntry('Import → ' + Object.keys(targetFlags).join(','))] });
           } else {
-            await addDoc(collection(db, 'orders'), { id: orderId, status: 'none', createdAt: new Date().toISOString(), problems: [], photoCount: 0, photoArchived: false, ...targetFlags, prestashopData: buildPsData2(), history: [historyEntry('Import z Excel')] });
+            await addDoc(collection(db, 'orders'), { id: orderId, status: 'none', createdAt: new Date().toISOString(), problems: [], photoCount: 0, photoArchived: false, ...flags, prestashopData: buildPsData2(), history: [historyEntry('Import z Excel')] });
           }
         };
 
@@ -1702,7 +1791,21 @@ export default function App() {
 
   const prestashopSorted = orders.filter(o => o.inPrestashop && !o.movedToProduction);
   const wydaneNaProdukcjeOrders = orders.filter(o => o.wydaneNaProdukcje).sort(sortByKanapka);
-  const konsultacjeOrders = orders.filter(o => o.inKonsultacje && !o.konsultacjeArchived);
+  const konsultacjeOrders = orders.filter(o => o.inKonsultacje && !o.konsultacjeArchived).sort((a,b) => {
+    const ad = a.prestashopData?.dataKonsultacji || '9999';
+    const bd = b.prestashopData?.dataKonsultacji || '9999';
+    return ad.localeCompare(bd);
+  });
+  const today = new Date().toLocaleDateString('pl-PL');
+  const tomorrow = new Date(Date.now() + 86400000).toLocaleDateString('pl-PL');
+  const konsultacjeDzisiaj = konsultacjeOrders.filter(o => {
+    const dk = o.prestashopData?.dataKonsultacji || '';
+    return dk.startsWith(today.split('.').reverse().join('-')) || dk.includes(today);
+  });
+  const konsultacjeJutro = konsultacjeOrders.filter(o => {
+    const dk = o.prestashopData?.dataKonsultacji || '';
+    return dk.startsWith(tomorrow.split('.').reverse().join('-')) || dk.includes(tomorrow);
+  });
   const probkiOrders = orders.filter(o => o.inProbki && !o.probkiArchived);
   const planowanieOrders = orders.filter(o => o.inPlanowanie && !o.planowanieArchived).sort((a, b) => {
     const aSpak = (a.spakowane || false) ? 1 : 0;
@@ -1779,7 +1882,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.9</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.10</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2046,25 +2149,92 @@ export default function App() {
           {activeTab === 'konsultacje' && (
             <div>
               <h2>💬 Konsultacje ({konsultacjeOrders.length})</h2>
+
+              {/* Dzisiaj i jutro */}
+              {(konsultacjeDzisiaj.length > 0 || konsultacjeJutro.length > 0) && (
+                <div style={{ background: '#e8f5e9', border: '1px solid #4caf50', borderRadius: '8px', padding: '10px', marginBottom: '1rem' }}>
+                  {konsultacjeDzisiaj.length > 0 && <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#2e7d32' }}>📅 Dziś: {konsultacjeDzisiaj.map(o => '#' + o.id + ' ' + (o.prestashopData?.dataKonsultacji || '')).join(' | ')}</div>}
+                  {konsultacjeJutro.length > 0 && <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#1565c0', marginTop: '4px' }}>📅 Jutro: {konsultacjeJutro.map(o => '#' + o.id + ' ' + (o.prestashopData?.dataKonsultacji || '')).join(' | ')}</div>}
+                </div>
+              )}
+
               <div className="search-box"><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj..." /></div>
               {konsultacjeOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
                 const ps = order.prestashopData || {};
+                const dataK = ps.dataKonsultacji || '';
+                const potwierdzona = ps.dataKonsultacjiPotwierdzona || false;
                 return (
                   <React.Fragment key={order.docId}>
                     <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                         <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                        {ps.dataRealizacji && <span style={{ fontSize: '13px' }}>📅 {ps.dataRealizacji}</span>}
-                        {ps.transport && <span style={{ fontSize: '11px', color: '#666' }}>{ps.transport.substring(0, 40)}</span>}
+                        {ps.dataDodania && <span style={{ fontSize: '12px', color: '#666' }}>dodano: {ps.dataDodania}</span>}
+                        {dataK && !potwierdzona && <span style={{ fontSize: '12px', background: '#fff3e0', padding: '1px 6px', borderRadius: '4px' }}>🕐 {dataK}</span>}
+                        {dataK && potwierdzona && <span style={{ fontSize: '12px', background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>✅ {dataK} — {ps.konsultantImie || ''}</span>}
+                        {order.konsultacjaOdbyta && <span style={{ fontSize: '12px', background: '#e3f2fd', padding: '1px 6px', borderRadius: '4px' }}>📞 odbyta</span>}
                       </div>
                     </div>
                     {selectedOrderId === order.id && (
-                      <div className="card">
-                        <div style={{ fontSize: '13px' }}><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
-                        <div style={{ fontSize: '13px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
-                        <div style={{ fontSize: '13px' }}><strong>Transport:</strong> {ps.transport || '—'}</div>
-                        <div style={{ fontSize: '13px' }}><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
-                        <div style={{ fontSize: '13px', marginTop: '6px' }}><strong>Produkty:</strong> {ps.produkty || '—'}</div>
+                      <div className="card" style={{ borderLeft: '3px solid #2196F3' }}>
+                        <div style={{ fontSize: '13px', marginBottom: '8px' }}>
+                          <div><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
+                          <div><strong>Transport:</strong> {ps.transport || '—'}</div>
+                          <div><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
+                          <div style={{ marginTop: '6px' }}><strong>Produkty:</strong> {ps.produkty || '—'}</div>
+                        </div>
+
+                        {/* Data konsultacji — datetime picker */}
+                        {!potwierdzona ? (
+                          <div style={{ background: '#fff8e1', border: '1px solid #ffcc02', borderRadius: '6px', padding: '10px', marginBottom: '8px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '6px' }}>📅 Data konsultacji:</div>
+                            <input type="datetime-local" value={konsultacjeDataQ[order.id] || dataK || ''}
+                              onChange={e => setKonsultacjeDataQ(prev => ({ ...prev, [order.id]: e.target.value }))}
+                              style={{ padding: '5px', border: '1px solid #ddd', borderRadius: '4px', marginRight: '6px' }} />
+                            {(konsultacjeDataQ[order.id] || dataK) && (
+                              <button className="btn btn-primary" onClick={async () => {
+                                const newDate = konsultacjeDataQ[order.id] || dataK;
+                                if (!newDate) return;
+                                const newPs = { ...ps, dataKonsultacji: newDate };
+                                await handleUpdateOrderField(order.id, 'prestashopData', newPs);
+                                setKonsultacjeDataQ(prev => { const n = {...prev}; delete n[order.id]; return n; });
+                              }} style={{ fontSize: '12px' }}>💾 Zapisz datę</button>
+                            )}
+                            {dataK && (
+                              <div style={{ marginTop: '8px' }}>
+                                <button className="btn btn-success" onClick={async () => {
+                                  if (!window.confirm('Czy potwierdzasz umówienie z klientem konsultacji w dniu ' + new Date(dataK).toLocaleDateString('pl-PL') + ' o godzinie ' + new Date(dataK).toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit'}) + '?')) return;
+                                  const imie = window.prompt('Kto odbędzie konsultację (imię lub imię i nazwisko):');
+                                  if (!imie || !imie.trim()) return;
+                                  const newPs = { ...ps, dataKonsultacjiPotwierdzona: true, konsultantImie: imie.trim() };
+                                  await handleUpdateOrderField(order.id, 'prestashopData', newPs);
+                                }} style={{ fontSize: '12px', width: '100%' }}>✅ Potwierdź datę konsultacji</button>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ background: '#e8f5e9', border: '1px solid #4caf50', borderRadius: '6px', padding: '10px', marginBottom: '8px', fontSize: '13px' }}>
+                            <strong style={{ color: '#2e7d32' }}>✅ Data potwierdzona:</strong> {new Date(dataK).toLocaleDateString('pl-PL')} {new Date(dataK).toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit'})}
+                            <span style={{ marginLeft: '8px', color: '#555' }}>— {ps.konsultantImie}</span>
+                          </div>
+                        )}
+
+                        {/* Konsultacja odbyta */}
+                        {potwierdzona && !order.konsultacjaOdbyta && (
+                          <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={order.konsultacjaOdbyta || false} onChange={async () => {
+                              if (!window.confirm('Czy zmieniłeś status w sklepie?')) return;
+                              await handleUpdateOrderField(order.id, 'konsultacjaOdbyta', true);
+                            }} /> Konsultacja odbyta
+                          </label>
+                        )}
+
+                        {/* Archiwum */}
+                        {order.konsultacjaOdbyta && (
+                          <button className="btn btn-success" onClick={async () => {
+                            const orderRef2 = doc(db, 'orders', order.docId);
+                            await updateDoc(orderRef2, { konsultacjeArchived: true, inKonsultacje: false, history: [...(order.history || []), historyEntry('Archiwum konsultacji')] });
+                          }} style={{ width: '100%', fontSize: '13px' }}>🗄️ Przenieś do archiwum</button>
+                        )}
                       </div>
                     )}
                   </React.Fragment>
@@ -2076,6 +2246,176 @@ export default function App() {
           {activeTab === 'probki' && (
             <div>
               <h2>🎨 Próbki ({probkiOrders.length})</h2>
+
+              {/* Górne przyciski — Magazyn i Dodaj na magazyn */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                <button className="btn btn-primary" onClick={() => { fetchProbkiKatalog(); setShowDodajProbki(!showDodajProbki); setShowMagazyn(false); }} style={{ fontSize: '12px' }}>
+                  {showDodajProbki ? '✕ Zamknij' : '➕ Dodaj na magazyn'}
+                </button>
+                <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowMagazyn(!showMagazyn); setShowDodajProbki(false); }} style={{ fontSize: '12px' }}>
+                  {showMagazyn ? '✕ Zamknij' : '📦 Sprawdź stany magazynowe'}
+                </button>
+                <button className="btn" onClick={() => setShowPominieteLista(!showPominieteLista)} style={{ fontSize: '12px' }}>
+                  {showPominieteLista ? '✕ Zamknij' : '⏭️ Lista pominiętych'}
+                </button>
+              </div>
+
+              {/* Panel dodaj na magazyn */}
+              {showDodajProbki && (
+                <div style={{ background: '#f3e5f5', border: '1px solid #ce93d8', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
+                  <h3 style={{ margin: '0 0 8px' }}>➕ Dodaj próbki do magazynu</h3>
+                  <div style={{ position: 'relative', marginBottom: '8px' }}>
+                    <input type="text" value={probkiSearchQ} onChange={e => setProbkiSearchQ(e.target.value)} placeholder="Szukaj po nazwie lub numerze dekoru..."
+                      style={{ width: '100%', padding: '7px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '13px' }} />
+                    {probkiSearchQ && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', maxHeight: '200px', overflow: 'auto', zIndex: 10 }}>
+                        {probkiKatalogLoading && <div style={{ padding: '8px', fontSize: '12px', color: '#999' }}>Ładowanie...</div>}
+                        {(() => {
+                          const q2 = probkiSearchQ.toLowerCase();
+                          const fil = probkiKatalog.filter(p => p.nazwa.toLowerCase().includes(q2) || extractDekorNr(p.nazwa).includes(q2));
+                          return fil.slice(0, 20).map((p, i) => (
+                            <div key={i} style={{ padding: '6px 10px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
+                              onMouseEnter={e => e.currentTarget.style.background = '#e3f2fd'}
+                              onMouseLeave={e => e.currentTarget.style.background = ''}
+                              onClick={() => {
+                                const il = window.prompt('Ile sztuk probki dodajesz do magazynu? ' + p.nazwa);
+                                if (!il || isNaN(parseInt(il))) return;
+                                setDodajProbkiRows(prev => [...prev, { nazwa: p.nazwa, dekorNr: extractDekorNr(p.nazwa), ilosc: parseInt(il) }]);
+                                setProbkiSearchQ('');
+                              }}>
+                              {p.nazwa}
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                  {dodajProbkiRows.length > 0 && (
+                    <div style={{ marginBottom: '8px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                        <thead><tr style={{ background: '#f5f5f5' }}>
+                          <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'left' }}>Próbka</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Ilość</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Usuń</th>
+                        </tr></thead>
+                        <tbody>
+                          {dodajProbkiRows.map((r, i) => (
+                            <tr key={i}>
+                              <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{r.nazwa}</td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                <input type="number" value={r.ilosc} onChange={e => setDodajProbkiRows(prev => prev.map((x, j) => j === i ? { ...x, ilosc: parseInt(e.target.value) || 0 } : x))}
+                                  style={{ width: '60px', textAlign: 'center', border: '1px solid #ddd', borderRadius: '3px', padding: '2px' }} />
+                              </td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                <button onClick={() => setDodajProbkiRows(prev => prev.filter((_, j) => j !== i))} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '14px' }}>✕</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="btn" onClick={() => setProbkiSearchQ(' ')} style={{ fontSize: '12px' }}>+ Dodaj kolejną</button>
+                    {dodajProbkiRows.length > 0 && (
+                      <button className="btn btn-success" onClick={async () => {
+                        for (const r of dodajProbkiRows) {
+                          if (r.dekorNr) await updateMagazynProbek(r.dekorNr, r.ilosc, { type: 'dodanie', user: currentUser?.name || currentUser?.email || '?' });
+                        }
+                        setDodajProbkiRows([]);
+                        setShowDodajProbki(false);
+                        alert('Dodano do magazynu: ' + dodajProbkiRows.length + ' pozycji');
+                      }} style={{ fontSize: '12px' }}>💾 Dodaj na magazyn</button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Panel stany magazynowe */}
+              {showMagazyn && (
+                <div style={{ background: '#e8eaf6', border: '1px solid #9fa8da', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
+                  <h3 style={{ margin: '0 0 8px' }}>📦 Stany magazynowe próbek</h3>
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <input type="text" value={magazynSearchQ} onChange={e => setMagazynSearchQ(e.target.value)} placeholder="Szukaj..." style={{ padding: '5px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '12px', width: '150px' }} />
+                    {['nazwa','ilosc'].map(s => (
+                      <button key={s} className={`btn ${magazynSortBy === s ? 'btn-primary' : ''}`} onClick={() => setMagazynSortBy(s)} style={{ fontSize: '11px', padding: '3px 8px' }}>{s === 'nazwa' ? 'Nazwa' : 'Ilość'}</button>
+                    ))}
+                  </div>
+                  <div style={{ maxHeight: '300px', overflow: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                      <thead><tr style={{ background: '#c5cae9', position: 'sticky', top: 0 }}>
+                        <th style={{ padding: '4px 6px', border: '1px solid #9fa8da', textAlign: 'left' }}>Próbka</th>
+                        <th style={{ padding: '4px 6px', border: '1px solid #9fa8da', textAlign: 'center' }}>Dostępne</th>
+                        <th style={{ padding: '4px 6px', border: '1px solid #9fa8da', textAlign: 'center' }}>Remanent</th>
+                      </tr></thead>
+                      <tbody>
+                        {probkiKatalog
+                          .filter(p => !magazynSearchQ || p.nazwa.toLowerCase().includes(magazynSearchQ.toLowerCase()) || extractDekorNr(p.nazwa).includes(magazynSearchQ))
+                          .sort((a, b) => {
+                            if (magazynSortBy === 'ilosc') return (parseInt(magazynProbek[extractDekorNr(b.nazwa)] || 0)) - (parseInt(magazynProbek[extractDekorNr(a.nazwa)] || 0));
+                            return a.nazwa.localeCompare(b.nazwa);
+                          })
+                          .map((p, i) => {
+                            const nr = extractDekorNr(p.nazwa);
+                            const ilosc = parseInt(magazynProbek[nr] || 0);
+                            return (
+                              <tr key={i} style={{ background: ilosc === 0 ? '#fff8e1' : '' }}>
+                                <td style={{ padding: '3px 6px', border: '1px solid #e8eaf6' }}>{p.nazwa}</td>
+                                <td style={{ padding: '3px 6px', border: '1px solid #e8eaf6', textAlign: 'center', fontWeight: ilosc > 0 ? 'bold' : 'normal', color: ilosc === 0 ? '#999' : '#2e7d32' }}>{ilosc}</td>
+                                <td style={{ padding: '3px 6px', border: '1px solid #e8eaf6', textAlign: 'center' }}>
+                                  <button className="btn" onClick={() => {
+                                    const fiz = window.prompt('Ile sztuk "' + p.nazwa + '" jest fizycznie na magazynie?', String(ilosc));
+                                    if (fiz === null || isNaN(parseInt(fiz))) return;
+                                    const fizN = parseInt(fiz);
+                                    const diff = fizN - ilosc;
+                                    if (diff === 0) { alert('Zgodne — brak różnicy'); return; }
+                                    const msg = diff > 0 ? 'Mamy o ' + diff + ' szt. więcej niż w systemie — dodaję do magazynu' : 'Brakuje ' + Math.abs(diff) + ' szt. — odejmuję z magazynu';
+                                    if (window.confirm(msg + '\nCzy kontynuować?')) {
+                                      updateMagazynProbek(nr, diff, { type: 'remanent', user: currentUser?.name || currentUser?.email || '?', fizyczne: fizN, systemowe: ilosc });
+                                    }
+                                  }} style={{ fontSize: '10px', padding: '1px 5px' }}>🔄</button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Lista pominiętych */}
+              {showPominieteLista && (
+                <div style={{ background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
+                  <h3 style={{ margin: '0 0 8px' }}>⏭️ Zamówienia z pominiętymi próbkami</h3>
+                  {probkiOrders.filter(o => (o.probkiRowStatus || []).some(r => r.pomin)).map(order => {
+                    const ps = order.prestashopData || {};
+                    const rows2 = parseProduktyFromRaw(ps.produkty || '');
+                    return (
+                      <div key={order.docId} style={{ background: '#fff', border: '1px solid #ffe0b2', borderRadius: '4px', padding: '8px', marginBottom: '6px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>#{order.id}</div>
+                        {rows2.map((r, i) => {
+                          const rs = (order.probkiRowStatus || [])[i] || {};
+                          if (!rs.pomin) return null;
+                          return (
+                            <div key={i} style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span>⏭️ {r.name}</span>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <input type="checkbox" checked={rs.korekta || false} onChange={() => {
+                                  const ns = [...(order.probkiRowStatus || Array(rows2.length).fill({}))];
+                                  ns[i] = { ...ns[i], korekta: !rs.korekta };
+                                  handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
+                                }} /> Korekta
+                              </label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="search-box"><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj..." /></div>
               {probkiOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
                 const ps = order.prestashopData || {};
@@ -2086,7 +2426,7 @@ export default function App() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                         <h3 style={{ margin: 0 }}>#{order.id}</h3>
                         {ps.dataDodania && <span style={{ fontSize: '12px', color: '#666' }}>📅 {ps.dataDodania}</span>}
-                        {ps.transport && <span style={{ fontSize: '11px', color: '#888' }}>{ps.transport.substring(0, 35)}</span>}
+                        {ps.transport && <span style={{ fontSize: '11px', color: '#888' }}>{ps.transport.substring(0, 30)}</span>}
                         {order.probkiGotowe && order.probkiWyslane && <span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>✅ wysłane</span>}
                       </div>
                     </div>
@@ -2097,50 +2437,60 @@ export default function App() {
                           <div><strong>Transport:</strong> {ps.transport || '—'}</div>
                         </div>
 
-                        {/* Tabela produktów — tylko nazwa, ilość, dostępne, spakowane, wyprodukuj */}
+                        {/* Tabela produktów z magazynem */}
                         {rows.length > 0 && (
                           <div style={{ marginBottom: '1rem', overflowX: 'auto' }}>
                             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
                               <thead>
                                 <tr style={{ background: '#f3e5f5' }}>
                                   <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'left' }}>Nazwa próbki</th>
-                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Ilość</th>
+                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Szt.</th>
                                   <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Dostępne</th>
                                   <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Spakowane</th>
                                   <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Wyprodukuj</th>
+                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Pomiń</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {rows.map((r, i) => {
-                                  const rowStatus = (order.probkiRowStatus || [])[i] || {};
+                                  const rs = (order.probkiRowStatus || [])[i] || {};
+                                  const dekorNr = extractDekorNr(r.name);
+                                  const dostepne = parseInt(magazynProbek[dekorNr] || 0);
                                   return (
-                                    <tr key={i}>
+                                    <tr key={i} style={{ background: rs.pomin ? '#fff8e1' : rs.spakowane ? '#e8f5e9' : '' }}>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{r.name}</td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>{r.qty}</td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center', color: dostepne > 0 ? '#2e7d32' : '#999', fontWeight: dostepne > 0 ? 'bold' : 'normal' }}>{dostepne}</td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                        <input type="text" defaultValue={rowStatus.dostepne || ''} placeholder="—"
-                                          onBlur={e => {
+                                        <input type="checkbox" checked={rs.spakowane || false} disabled={rs.pomin}
+                                          onChange={async () => {
+                                            const newVal = !rs.spakowane;
                                             const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
                                             while (ns.length < rows.length) ns.push({});
-                                            ns[i] = { ...ns[i], dostepne: e.target.value };
+                                            ns[i] = { ...ns[i], spakowane: newVal, pomin: false };
                                             handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
-                                          }} style={{ width: '50px', textAlign: 'center', border: '1px solid #ddd', borderRadius: '3px', padding: '2px' }} />
+                                            // Koryguj stan magazynu
+                                            if (dekorNr && newVal) await updateMagazynProbek(dekorNr, -parseInt(r.qty || 1), { type: 'spakowanie', orderId, user: currentUser?.name || currentUser?.email || '?' });
+                                            if (dekorNr && !newVal) await updateMagazynProbek(dekorNr, parseInt(r.qty || 1), { type: 'cofnięcie spakowania', orderId, user: currentUser?.name || currentUser?.email || '?' });
+                                          }} />
                                       </td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                        <input type="checkbox" checked={rowStatus.spakowane || false} onChange={() => {
-                                          const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
-                                          while (ns.length < rows.length) ns.push({});
-                                          ns[i] = { ...ns[i], spakowane: !rowStatus.spakowane };
-                                          handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
-                                        }} />
+                                        <input type="checkbox" checked={rs.wyprodukuj || false}
+                                          onChange={() => {
+                                            const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
+                                            while (ns.length < rows.length) ns.push({});
+                                            ns[i] = { ...ns[i], wyprodukuj: !rs.wyprodukuj };
+                                            handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
+                                          }} />
                                       </td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                        <input type="checkbox" checked={rowStatus.wyprodukuj || false} onChange={() => {
-                                          const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
-                                          while (ns.length < rows.length) ns.push({});
-                                          ns[i] = { ...ns[i], wyprodukuj: !rowStatus.wyprodukuj };
-                                          handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
-                                        }} />
+                                        <input type="checkbox" checked={rs.pomin || false} disabled={rs.spakowane}
+                                          onChange={() => {
+                                            const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
+                                            while (ns.length < rows.length) ns.push({});
+                                            ns[i] = { ...ns[i], pomin: !rs.pomin };
+                                            handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
+                                          }} />
                                       </td>
                                     </tr>
                                   );
@@ -2156,11 +2506,11 @@ export default function App() {
                           <textarea defaultValue={order.probkiUwagi || ''} onBlur={e => { if (e.target.value !== (order.probkiUwagi || '')) handleUpdateOrderField(order.id, 'probkiUwagi', e.target.value); }} placeholder="Uwagi..." style={{ width: '100%', height: '50px' }} />
                         </div>
 
-                        {/* Pliki — upload do folderu próbek */}
+                        {/* Pliki */}
                         <div style={{ background: '#e0f2f1', border: '1px solid #80cbc4', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
                           <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Pliki:</div>
                           {accessToken
-                            ? <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, '1PBQalfDxjuXNmaMU7f3au_lzT3FX0Iqw'); e.target.value = ''; }} style={{ fontSize: '12px' }} />
+                            ? <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, PROBKI_FOLDER_ID); e.target.value = ''; }} style={{ fontSize: '12px' }} />
                             : <button className="btn btn-primary" onClick={handleAuthorizeGoogle} style={{ fontSize: '12px' }}>🔐 Autoryzuj Drive</button>}
                           {(order.attachments || []).map((att, idx) => (
                             <div key={idx} style={{ fontSize: '11px', marginTop: '3px' }}>
@@ -2170,7 +2520,7 @@ export default function App() {
                           {orderMessages[order.id] && <div style={{ fontSize: '11px', marginTop: '4px', color: orderMessages[order.id].includes('✅') ? '#2e7d32' : '#c62828' }}>{orderMessages[order.id]}</div>}
                         </div>
 
-                        {/* Gotowe do wysyłki + Wysłane */}
+                        {/* Gotowe + Wysłane */}
                         <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
                           <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <input type="checkbox" checked={order.probkiGotowe || false} onChange={() => handleUpdateOrderField(order.id, 'probkiGotowe', !order.probkiGotowe)} /> Gotowe do wysyłki
@@ -2180,12 +2530,19 @@ export default function App() {
                           </label>
                         </div>
 
-                        {order.probkiGotowe && order.probkiWyslane && (
-                          <button className="btn btn-success" onClick={async () => {
-                            const orderRef2 = doc(db, 'orders', order.docId);
-                            await updateDoc(orderRef2, { probkiArchived: true, inProbki: false, history: [...(order.history || []), historyEntry('Przeniesiono do archiwum próbek')] });
-                          }} style={{ width: '100%', fontSize: '13px' }}>🗄️ Przenieś do archiwum</button>
-                        )}
+                        {(() => {
+                          const allDone = rows.every((r, i) => {
+                            const rs = (order.probkiRowStatus || [])[i] || {};
+                            return rs.spakowane || rs.pomin;
+                          });
+                          const canArchive = order.probkiGotowe && order.probkiWyslane && allDone;
+                          return canArchive ? (
+                            <button className="btn btn-success" onClick={async () => {
+                              const orderRef2 = doc(db, 'orders', order.docId);
+                              await updateDoc(orderRef2, { probkiArchived: true, inProbki: false, history: [...(order.history || []), historyEntry('Archiwum próbek')] });
+                            }} style={{ width: '100%', fontSize: '13px' }}>🗄️ Przenieś do archiwum</button>
+                          ) : null;
+                        })()}
                       </div>
                     )}
                   </React.Fragment>
