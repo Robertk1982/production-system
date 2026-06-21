@@ -145,6 +145,10 @@ export default function App() {
   const [zamowProbkiRows, setZamowProbkiRows] = useState([]);
   const [zamowProbkiSearchQ, setZamowProbkiSearchQ] = useState('');
   const [oczekiwanieSet, setOczekiwanieSet] = useState({});
+  const [akcesoriaZamowienie, setAkcesoriaZamowienie] = useState([]);
+  const [showAkcesoriaZamowienie, setShowAkcesoriaZamowienie] = useState(false);
+  const [akcesoriaZamSearchQ, setAkcesoriaZamSearchQ] = useState('');
+  const [akcesoriaZamPlikPobrany, setAkcesoriaZamPlikPobrany] = useState(false);
   const [konsultacjeDataQ, setKonsultacjeDataQ] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -486,6 +490,10 @@ export default function App() {
     // Load zamow probki list
     getDoc(doc(db, 'magazyn', 'zamowProbki')).then(snap => {
       if (snap.exists()) setZamowProbkiRows(snap.data().items || []);
+    }).catch(() => {});
+    // Preload akcesoria zamowienie
+    getDoc(doc(db, 'magazyn', 'akcesoriaZamowienie')).then(snap => {
+      if (snap.exists()) setAkcesoriaZamowienie(snap.data().items || []);
     }).catch(() => {});
     // Preload akcesoria katalog from cache
     getDoc(doc(db, 'katalogi', 'akcesoria')).then(snap => {
@@ -1895,7 +1903,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.19</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.20</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2311,7 +2319,16 @@ export default function App() {
                         {probkiKatalogLoading && <div style={{ padding: '8px', fontSize: '12px', color: '#999' }}>Ładowanie...</div>}
                         {(() => {
                           const q2 = probkiSearchQ.toLowerCase();
-                          const fil = probkiKatalog.filter(p => p.nazwa.toLowerCase().includes(q2) || extractDekorNr(p.nazwa).includes(q2));
+                          const q2lower = q2.toLowerCase();
+                          const fil = probkiKatalog.filter(p => {
+                            if (p.nazwa.toLowerCase().includes(q2lower)) return true;
+                            const nr = extractDekorNr(p.nazwa);
+                            if (nr.includes(q2lower)) return true;
+                            // Also search without U prefix: "335" matches "U335"
+                            const nameNoU = p.nazwa.toLowerCase().replace(/\bu/gi, '');
+                            if (nameNoU.includes(q2lower)) return true;
+                            return false;
+                          });
                           return fil.slice(0, 20).map((p, i) => (
                             <div key={i} style={{ padding: '6px 10px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
                               onMouseEnter={e => e.currentTarget.style.background = '#e3f2fd'}
@@ -2389,7 +2406,7 @@ export default function App() {
                       </tr></thead>
                       <tbody>
                         {probkiKatalog
-                          .filter(p => !magazynSearchQ || p.nazwa.toLowerCase().includes(magazynSearchQ.toLowerCase()) || extractDekorNr(p.nazwa).includes(magazynSearchQ))
+                          .filter(p => !magazynSearchQ || p.nazwa.toLowerCase().includes(magazynSearchQ.toLowerCase()) || extractDekorNr(p.nazwa).includes(magazynSearchQ) || p.nazwa.toLowerCase().replace(/\bu/gi,'').includes(magazynSearchQ.toLowerCase()))
                           .sort((a, b) => {
                             if (magazynSortBy === 'ilosc') return (parseInt(magazynProbek[extractDekorNr(b.nazwa)] || 0)) - (parseInt(magazynProbek[extractDekorNr(a.nazwa)] || 0));
                             return a.nazwa.localeCompare(b.nazwa);
@@ -2568,98 +2585,91 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Trzecia tabelka: Zamów próbki — wygląd i działanie jak pilne/niepilne */}
-                    <div style={{ marginBottom: '12px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#2e7d32' }}>📋 Do wyprodukowania ({zamowActive.length}):</div>
-                        <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowZamowProbki(!showZamowProbki); }} style={{ fontSize: '11px' }}>
-                          {showZamowProbki ? '✕' : '+ Dodaj'}
-                        </button>
-                      </div>
-                      {showZamowProbki && (
-                        <div style={{ position: 'relative', marginBottom: '6px' }}>
-                          <input type="text" value={zamowProbkiSearchQ} onChange={e => setZamowProbkiSearchQ(e.target.value)}
-                            onFocus={() => { if (!zamowProbkiSearchQ) setZamowProbkiSearchQ(' '); }}
-                            placeholder="Szukaj próbki..."
-                            style={{ width: '100%', padding: '6px', border: '1px solid #a5d6a7', borderRadius: '4px', fontSize: '12px' }} />
-                          {zamowProbkiSearchQ.trim() && (
-                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '150px', overflow: 'auto', zIndex: 10, borderRadius: '4px' }}>
-                              {probkiKatalog.filter(p => p.nazwa.toLowerCase().includes(zamowProbkiSearchQ.trim().toLowerCase()) || extractDekorNr(p.nazwa).includes(zamowProbkiSearchQ.trim())).slice(0, 20).map((p, pi) => (
-                                <div key={pi} style={{ padding: '5px 8px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
-                                  onMouseEnter={e => e.currentTarget.style.background = '#e8f5e9'}
-                                  onMouseLeave={e => e.currentTarget.style.background = ''}
-                                  onClick={async () => {
-                                    const newList = [...zamowProbkiRows, { nazwa: p.nazwa, dekorNr: extractDekorNr(p.nazwa), addedAt: new Date().toISOString(), user: currentUser?.name || '?' }];
-                                    setZamowProbkiRows(newList); await updateZamowProbkiList(newList); setZamowProbkiSearchQ('');
-                                  }}>{p.nazwa}</div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {zamowActive.length > 0 && (
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                          <thead><tr style={{ background: '#c8e6c9' }}>
-                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'left' }}>Próbka</th>
-                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Dostępne</th>
-                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Zlecone</th>
-                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Wyprodukowane</th>
-                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Usuń</th>
-                          </tr></thead>
-                          <tbody>
-                            {zamowActive.map((zr, zi) => {
-                              const dst = parseInt(magazynProbek[zr.dekorNr] || 0);
-                              return (
-                                <tr key={zi}>
-                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9' }}>{zr.nazwa}</td>
-                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center', color: dst > 0 ? '#2e7d32' : '#999' }}>{dst}</td>
-                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
-                                    <input type="checkbox" checked={zr.zlecone || false} onChange={async () => {
-                                      const realIdx = zamowProbkiRows.findIndex((x, j) => !x.wyprodukowane && zamowProbkiRows.filter(y => !y.wyprodukowane).indexOf(x) === zi);
-                                      const nl = zamowProbkiRows.map((x, j) => {
-                                        const activeIdx = zamowProbkiRows.filter(y => !y.wyprodukowane).indexOf(x);
-                                        return activeIdx === zi ? { ...x, zlecone: !x.zlecone } : x;
-                                      });
-                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                    }} />
-                                  </td>
-                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
-                                    <input type="checkbox" checked={false} onChange={async () => {
-                                      const il = window.prompt('Ile sztuk dodać do magazynu? (' + zr.nazwa + ')');
-                                      if (!il || isNaN(parseInt(il))) return;
-                                      if (zr.dekorNr) await updateMagazynProbek(zr.dekorNr, parseInt(il), { type: 'wyprodukowanie-zamow', user: currentUser?.name || '?' });
-                                      const nl = zamowProbkiRows.map((x) => x === zr ? { ...x, wyprodukowane: true } : x);
-                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                    }} />
-                                  </td>
-                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
-                                    <button onClick={async () => {
-                                      const nl = zamowProbkiRows.filter(x => x !== zr);
-                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                    }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                      {zamowActive.length === 0 && <p style={{ fontSize: '11px', color: '#666', margin: '4px 0 0' }}>Brak próbek do zamówienia</p>}
-                    </div>
-
                     {pilne.length > 0 && (
                       <div style={{ marginBottom: '12px' }}>
                         <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#c62828', marginBottom: '4px' }}>🚨 PILNE — niewystarczające stany:</div>
                         <WyprodukujTabela items={pilne} isPilne={true} />
                       </div>
                     )}
-                    {niepilne.length > 0 && (
+                    {(niepilne.length > 0 || zamowActive.length > 0) && (
                       <div>
                         <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#555', marginBottom: '4px' }}>📋 Do wyprodukowania:</div>
                         <WyprodukujTabela items={niepilne} isPilne={false} />
+                        {/* Zamów próbki (nie pilne) — w tej samej tabelce */}
+                        {zamowActive.length > 0 && (
+                          <div style={{ marginTop: '4px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                              <span style={{ fontSize: '11px', color: '#666', fontStyle: 'italic' }}>Ręcznie dodane do wyprodukowania:</span>
+                              <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowZamowProbki(!showZamowProbki); }} style={{ fontSize: '10px', padding: '2px 6px' }}>+ Dodaj</button>
+                            </div>
+                            {showZamowProbki && (
+                              <div style={{ position: 'relative', marginBottom: '6px' }}>
+                                <input type="text" value={zamowProbkiSearchQ} onChange={e => setZamowProbkiSearchQ(e.target.value)}
+                                  onFocus={() => { if (!zamowProbkiSearchQ) setZamowProbkiSearchQ(' '); }}
+                                  placeholder="Szukaj próbki..."
+                                  style={{ width: '100%', padding: '5px', border: '1px solid #a5d6a7', borderRadius: '4px', fontSize: '12px' }} />
+                                {zamowProbkiSearchQ.trim() && (
+                                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '140px', overflow: 'auto', zIndex: 20, borderRadius: '4px' }}>
+                                    {probkiKatalog.filter(p => { const q4 = zamowProbkiSearchQ.trim().toLowerCase(); return p.nazwa.toLowerCase().includes(q4) || extractDekorNr(p.nazwa).includes(q4) || p.nazwa.toLowerCase().replace(/u/gi,'').includes(q4); }).slice(0, 20).map((p, pi) => (
+                                      <div key={pi} style={{ padding: '5px 8px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
+                                        onMouseEnter={e => e.currentTarget.style.background = '#e8f5e9'}
+                                        onMouseLeave={e => e.currentTarget.style.background = ''}
+                                        onClick={async () => {
+                                          const newList = [...zamowProbkiRows, { nazwa: p.nazwa, dekorNr: extractDekorNr(p.nazwa), addedAt: new Date().toISOString(), user: currentUser?.name || '?' }];
+                                          setZamowProbkiRows(newList); await updateZamowProbkiList(newList); setZamowProbkiSearchQ('');
+                                        }}>{p.nazwa}</div>
+                                    ))}
+                                  </div>
+                                )}
+                                <button className="btn" onClick={() => setZamowProbkiSearchQ('')} style={{ fontSize: '10px', marginTop: '3px' }}>✕</button>
+                              </div>
+                            )}
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                              <thead><tr style={{ background: '#c8e6c9' }}>
+                                <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'left' }}>Próbka</th>
+                                <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Dostępne</th>
+                                <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Zlecone</th>
+                                <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Wyprodukowane</th>
+                                <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Usuń</th>
+                              </tr></thead>
+                              <tbody>
+                                {zamowActive.map((zr, zi) => {
+                                  const dst = parseInt(magazynProbek[zr.dekorNr] || 0);
+                                  return (
+                                    <tr key={zi}>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9' }}>{zr.nazwa}</td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center', color: dst > 0 ? '#2e7d32' : '#999' }}>{dst}</td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
+                                        <input type="checkbox" checked={zr.zlecone || false} onChange={async () => {
+                                          const nl = zamowProbkiRows.map(x => x === zr ? { ...x, zlecone: !x.zlecone } : x);
+                                          setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                        }} />
+                                      </td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
+                                        <input type="checkbox" checked={false} onChange={async () => {
+                                          const il = window.prompt('Ile sztuk dodac do magazynu? ' + zr.nazwa);
+                                          if (!il || isNaN(parseInt(il))) return;
+                                          if (zr.dekorNr) await updateMagazynProbek(zr.dekorNr, parseInt(il), { type: 'wyprodukowanie-zamow', user: currentUser?.name || '?' });
+                                          const nl = zamowProbkiRows.map(x => x === zr ? { ...x, wyprodukowane: true } : x);
+                                          setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                        }} />
+                                      </td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
+                                        <button onClick={async () => {
+                                          const nl = zamowProbkiRows.filter(x => x !== zr);
+                                          setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                        }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </div>
                     )}
-                    {toWyprodukuj.length === 0 && <p style={{ fontSize: '12px', color: '#666' }}>Brak zaznaczonych do wyprodukowania.</p>}
+                    {toWyprodukuj.length === 0 && zamowActive.length === 0 && <p style={{ fontSize: '12px', color: '#666' }}>Brak zaznaczonych do wyprodukowania.</p>}
                   </div>
                 );
               })()}
@@ -3129,27 +3139,160 @@ export default function App() {
                   {akcesoriaKatalogLoading ? '⏳' : '🔄'} Zaktualizuj listę akcesoriów
                 </button>
               )}
-              <button className="btn" onClick={() => {
-                const allBraki = [];
-                akcesoriaOrders.forEach(o => {
-                  if (!o.brakiMagazynowe) return;
-                  (o.brakiList || []).filter(b => !b.zamowione && !b.uzupelnione).forEach(b => {
-                    const existing = allBraki.find(x => x.kod === b.kod && x.nazwa === b.nazwa);
-                    if (existing) {
-                      existing.ilosc = (parseFloat(existing.ilosc) || 0) + (parseFloat(b.ilosc) || 0);
-                    } else {
-                      allBraki.push({ nazwa: b.nazwa, kod: b.kod || '', ilosc: parseFloat(b.ilosc) || 1 });
-                    }
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                <button className="btn" onClick={async () => {
+                  const allBraki = [];
+                  akcesoriaOrders.forEach(o => {
+                    if (!o.brakiMagazynowe) return;
+                    (o.brakiList || []).filter(b => !b.zamowione && !b.uzupelnione).forEach(b => {
+                      const existing = allBraki.find(x => x.kod === b.kod && x.nazwa === b.nazwa);
+                      if (existing) {
+                        existing.ilosc = (parseFloat(existing.ilosc) || 0) + (parseFloat(b.ilosc) || 0);
+                        existing.orderIds = [...(existing.orderIds || []), o.id];
+                      } else {
+                        allBraki.push({ nazwa: b.nazwa, kod: b.kod || '', ilosc: parseFloat(b.ilosc) || 1, orderIds: [o.id] });
+                      }
+                    });
                   });
-                });
-                if (!allBraki.length) { alert('Brak aktywnych braków do zliczenia.'); return; }
-                const lines = ['Nazwa;Kod;Ilość', ...allBraki.map(b => b.nazwa + ';' + b.kod + ';' + b.ilosc)];
-                const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = 'braki_akcesoriow.csv'; a.click();
-                URL.revokeObjectURL(url);
-              }} style={{ fontSize: '12px', marginBottom: '8px' }}>📥 Zlicz brakujące akcesoria</button>
+                  if (!allBraki.length) { alert('Brak aktywnych braków do zliczenia.'); return; }
+                  const lines = ['Nazwa;Kod;Ilość', ...allBraki.map(b => b.nazwa + ';' + b.kod + ';' + b.ilosc)];
+                  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = 'braki_akcesoriow.csv'; a.click();
+                  URL.revokeObjectURL(url);
+                  // Ask to mark as zamowione
+                  if (window.confirm('Czy zaznaczyć we wszystkich zamówieniach braki jako Zamówione?')) {
+                    for (const o of akcesoriaOrders) {
+                      if (!o.brakiMagazynowe) continue;
+                      const nb = (o.brakiList || []).map(b => {
+                        const inCsv = allBraki.some(ab => ab.nazwa === b.nazwa && ab.orderIds.includes(o.id));
+                        return inCsv ? { ...b, zamowione: true } : b;
+                      });
+                      if (JSON.stringify(nb) !== JSON.stringify(o.brakiList)) {
+                        await updateDoc(doc(db, 'orders', o.docId), { brakiList: nb, history: [...(o.history || []), historyEntry('Zaznaczono jako zamowione po pobraniu CSV brakow')] });
+                      }
+                    }
+                    alert('Zaznaczono braki jako zamówione.');
+                  }
+                }} style={{ fontSize: '12px' }}>📥 Zlicz brakujące akcesoria</button>
+
+                <button className="btn btn-primary" onClick={() => { fetchAkcesoriaKatalog(); setShowAkcesoriaZamowienie(!showAkcesoriaZamowienie); }} style={{ fontSize: '12px' }}>
+                  {showAkcesoriaZamowienie ? '✕ Zamknij' : '🛒 Dodaj akcesoria do zamówienia'}
+                </button>
+              </div>
+
+              {/* Panel zamówienie akcesoriów */}
+              {showAkcesoriaZamowienie && (
+                <div style={{ background: '#e8eaf6', border: '1px solid #9fa8da', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
+                  <h3 style={{ margin: '0 0 8px' }}>🛒 Zamówienie akcesoriów</h3>
+                  <div style={{ position: 'relative', marginBottom: '8px' }}>
+                    <input type="text" value={akcesoriaZamSearchQ} onChange={e => setAkcesoriaZamSearchQ(e.target.value)}
+                      onFocus={() => { if (akcesoriaKatalog.length === 0) fetchAkcesoriaKatalog(); if (!akcesoriaZamSearchQ) setAkcesoriaZamSearchQ(' '); }}
+                      placeholder="Szukaj po nazwie lub kodzie..."
+                      style={{ width: '100%', padding: '7px', border: '1px solid #9fa8da', borderRadius: '4px', fontSize: '12px' }} />
+                    {akcesoriaZamSearchQ.trim() && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '180px', overflow: 'auto', zIndex: 20, borderRadius: '4px' }}>
+                        {akcesoriaKatalog.filter(a => {
+                          const q5 = akcesoriaZamSearchQ.trim().toLowerCase();
+                          return a.nazwa.toLowerCase().includes(q5) || (a.kod || '').toLowerCase().includes(q5);
+                        }).slice(0, 30).map((a, ai) => (
+                          <div key={ai} style={{ padding: '5px 8px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#e8eaf6'}
+                            onMouseLeave={e => e.currentTarget.style.background = ''}
+                            onClick={async () => {
+                              const il = window.prompt('Ilość: ' + a.nazwa + (a.kod ? ' (' + a.kod + ')' : ''));
+                              if (!il || isNaN(parseInt(il))) return;
+                              const existing = akcesoriaZamowienie.find(x => x.nazwa === a.nazwa);
+                              let newList;
+                              if (existing) {
+                                newList = akcesoriaZamowienie.map(x => x.nazwa === a.nazwa ? { ...x, ilosc: (parseInt(x.ilosc) || 0) + parseInt(il) } : x);
+                              } else {
+                                newList = [...akcesoriaZamowienie, { nazwa: a.nazwa, kod: a.kod || '', ilosc: parseInt(il) }];
+                              }
+                              setAkcesoriaZamowienie(newList);
+                              await setDoc(doc(db, 'magazyn', 'akcesoriaZamowienie'), { items: newList, updatedAt: new Date().toISOString() });
+                              setAkcesoriaZamSearchQ('');
+                              setAkcesoriaZamPlikPobrany(false);
+                            }}>
+                            <strong>{a.nazwa}</strong> {a.kod && <span style={{ color: '#666', marginLeft: '6px', fontSize: '11px' }}>{a.kod}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {akcesoriaZamowienie.length > 0 && (
+                    <div>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', marginBottom: '8px' }}>
+                        <thead><tr style={{ background: '#c5cae9' }}>
+                          <th style={{ padding: '4px 6px', border: '1px solid #9fa8da', textAlign: 'left' }}>Nazwa</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #9fa8da', textAlign: 'left' }}>Kod</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #9fa8da', textAlign: 'center' }}>Ilość</th>
+                          <th style={{ padding: '4px 6px', border: '1px solid #9fa8da', textAlign: 'center' }}>Usuń</th>
+                        </tr></thead>
+                        <tbody>
+                          {akcesoriaZamowienie.map((az, azi) => (
+                            <tr key={azi}>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c5cae9' }}>{az.nazwa}</td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c5cae9', fontSize: '11px', color: '#666' }}>{az.kod || '—'}</td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c5cae9', textAlign: 'center' }}>
+                                <input type="number" value={az.ilosc} onChange={async e => {
+                                  const nl = akcesoriaZamowienie.map((x, j) => j === azi ? { ...x, ilosc: parseInt(e.target.value) || 0 } : x);
+                                  setAkcesoriaZamowienie(nl);
+                                  await setDoc(doc(db, 'magazyn', 'akcesoriaZamowienie'), { items: nl, updatedAt: new Date().toISOString() });
+                                  setAkcesoriaZamPlikPobrany(false);
+                                }} style={{ width: '60px', textAlign: 'center', padding: '2px', border: '1px solid #ddd', borderRadius: '3px' }} />
+                              </td>
+                              <td style={{ padding: '4px 6px', border: '1px solid #c5cae9', textAlign: 'center' }}>
+                                <button onClick={async () => {
+                                  const nl = akcesoriaZamowienie.filter((_, j) => j !== azi);
+                                  setAkcesoriaZamowienie(nl);
+                                  await setDoc(doc(db, 'magazyn', 'akcesoriaZamowienie'), { items: nl, updatedAt: new Date().toISOString() });
+                                }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      <button className="btn btn-success" onClick={() => {
+                        // Merge: braki + zamowienie
+                        const allBrakiZam = [];
+                        akcesoriaOrders.forEach(o => {
+                          if (!o.brakiMagazynowe) return;
+                          (o.brakiList || []).filter(b => !b.zamowione && !b.uzupelnione).forEach(b => {
+                            const ex = allBrakiZam.find(x => x.nazwa === b.nazwa);
+                            if (ex) ex.ilosc += parseFloat(b.ilosc) || 1;
+                            else allBrakiZam.push({ nazwa: b.nazwa, kod: b.kod || '', ilosc: parseFloat(b.ilosc) || 1, zrodlo: 'brak' });
+                          });
+                        });
+                        akcesoriaZamowienie.forEach(az => {
+                          const ex = allBrakiZam.find(x => x.nazwa === az.nazwa);
+                          if (ex) ex.ilosc += parseInt(az.ilosc) || 0;
+                          else allBrakiZam.push({ nazwa: az.nazwa, kod: az.kod || '', ilosc: parseInt(az.ilosc) || 0, zrodlo: 'zamowienie' });
+                        });
+                        const lines = ['Nazwa;Kod;Ilość;Źródło', ...allBrakiZam.map(b => b.nazwa + ';' + b.kod + ';' + b.ilosc + ';' + b.zrodlo)];
+                        const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url; a.download = 'zamowienie_akcesoriow.csv'; a.click();
+                        URL.revokeObjectURL(url);
+                        setAkcesoriaZamPlikPobrany(true);
+                      }} style={{ fontSize: '12px', marginRight: '6px' }}>📄 Przygotuj plik zamówienia (brakujące + dodatkowe)</button>
+
+                      {akcesoriaZamPlikPobrany && (
+                        <button className="btn btn-danger" onClick={async () => {
+                          setAkcesoriaZamowienie([]);
+                          await setDoc(doc(db, 'magazyn', 'akcesoriaZamowienie'), { items: [], updatedAt: new Date().toISOString() });
+                          setAkcesoriaZamPlikPobrany(false);
+                        }} style={{ fontSize: '12px' }}>✅ Akcesoria zamówione — wyczyść listę</button>
+                      )}
+                    </div>
+                  )}
+                  {akcesoriaZamowienie.length === 0 && <p style={{ fontSize: '12px', color: '#666' }}>Brak pozycji. Wyszukaj i dodaj akcesoria powyżej.</p>}
+                </div>
+              )}
 
               {uploadMessage && <div className={`msg ${uploadMessage.includes('✅') ? 'msg-success' : uploadMessage.includes('❌') ? 'msg-error' : 'msg-info'}`}>{uploadMessage}</div>}
 
@@ -3346,35 +3489,39 @@ export default function App() {
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {braki.filter(b => !b.uzupelnione).map((b, i) => (
-                                      <tr key={i} style={{ background: b.zamowione ? '#e8f5e9' : '#fff' }}>
-                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd' }}>{b.nazwa}</td>
-                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', fontSize: '10px', color: '#666' }}>{b.kod || '—'}</td>
-                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{b.ilosc}</td>
-                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                          <input type="checkbox" checked={b.zamowione || false} onChange={() => {
-                                            const nb = braki.map((x, j) => j === i ? { ...x, zamowione: !x.zamowione } : x);
-                                            aktualizujBraki(nb);
-                                          }} />
-                                        </td>
-                                        <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                          <input type="checkbox" checked={b.uzupelnione || false}
-                                            disabled={!b.zamowione}
-                                            title={!b.zamowione ? 'Najpierw zaznacz Zamówione' : ''}
-                                            onChange={async () => {
-                                              const nb = braki.map((x, j) => j === i ? { ...x, uzupelnione: true } : x);
-                                              const allDone = nb.every(x => x.uzupelnione);
-                                              const orderRef2 = doc(db, 'orders', order.docId);
-                                              await updateDoc(orderRef2, {
-                                                brakiList: nb,
-                                                // Gdy wszystkie uzupełnione — ukryj brakiMagazynowe
-                                                ...(allDone ? { brakiMagazynowe: false } : {}),
-                                                history: [...(order.history || []), historyEntry('Uzupelniono brak: ' + b.nazwa)]
-                                              });
+                                    {(order.brakiList || []).map((b, realIdx) => {
+                                      if (b.uzupelnione) return null;
+                                      return (
+                                        <tr key={realIdx} style={{ background: b.zamowione ? '#e8f5e9' : '#fff' }}>
+                                          <td style={{ padding: '3px 5px', border: '1px solid #ddd' }}>{b.nazwa}</td>
+                                          <td style={{ padding: '3px 5px', border: '1px solid #ddd', fontSize: '10px', color: '#666' }}>{b.kod || '—'}</td>
+                                          <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>{b.ilosc}</td>
+                                          <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                            <input type="checkbox" checked={b.zamowione || false} onChange={async () => {
+                                              const fullList = order.brakiList || [];
+                                              const nb = fullList.map((x, j) => j === realIdx ? { ...x, zamowione: !x.zamowione } : x);
+                                              await aktualizujBraki(nb);
                                             }} />
-                                        </td>
-                                      </tr>
-                                    ))}
+                                          </td>
+                                          <td style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                            <input type="checkbox" checked={b.uzupelnione || false}
+                                              disabled={!b.zamowione}
+                                              title={!b.zamowione ? 'Najpierw zaznacz Zamówione' : ''}
+                                              onChange={async () => {
+                                                const fullList = order.brakiList || [];
+                                                const nb = fullList.map((x, j) => j === realIdx ? { ...x, uzupelnione: true } : x);
+                                                const allDone = nb.every(x => x.uzupelnione);
+                                                const orderRef2 = doc(db, 'orders', order.docId);
+                                                await updateDoc(orderRef2, {
+                                                  brakiList: nb,
+                                                  ...(allDone ? { brakiMagazynowe: false } : {}),
+                                                  history: [...(order.history || []), historyEntry('Uzupelniono brak: ' + b.nazwa)]
+                                                });
+                                              }} />
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
                                   </tbody>
                                 </table>
                               )}
