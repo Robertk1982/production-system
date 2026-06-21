@@ -487,6 +487,13 @@ export default function App() {
     getDoc(doc(db, 'magazyn', 'zamowProbki')).then(snap => {
       if (snap.exists()) setZamowProbkiRows(snap.data().items || []);
     }).catch(() => {});
+    // Preload akcesoria katalog from cache
+    getDoc(doc(db, 'katalogi', 'akcesoria')).then(snap => {
+      if (snap.exists()) {
+        const cached = snap.data().items || [];
+        if (cached.length > 0) setAkcesoriaKatalog(cached);
+      }
+    }).catch(() => {});
     return unsub;
   }, []);
 
@@ -794,20 +801,50 @@ export default function App() {
     return m ? m[1].replace(/^0+/, '') : '';
   };
 
-  const fetchAkcesoriaKatalog = async () => {
-    if (akcesoriaKatalog.length > 0) return; // already loaded
+  const fetchAkcesoriaKatalog = async (force = false) => {
     setAkcesoriaKatalogLoading(true);
     try {
-      const url = 'https://docs.google.com/spreadsheets/d/' + AKCESORIA_SHEET_ID + '/gviz/tq?tqx=out:csv&sheet=Sheet1';
-      const resp = await fetch(url);
-      const text = await resp.text();
-      const rows = text.split('\n').slice(1).map(r => {
-        const cols = r.split(',').map(c => c.replace(/^"|"$/g, '').trim());
-        return { nazwa: cols[0] || '', kod: cols[1] || '' };
-      }).filter(r => r.nazwa);
-      setAkcesoriaKatalog(rows);
+      const cacheSnap = await getDoc(doc(db, 'katalogi', 'akcesoria'));
+      const cached = cacheSnap.exists() ? (cacheSnap.data().items || []) : [];
+      if (cached.length > 0 && !force) {
+        setAkcesoriaKatalog(cached);
+        setAkcesoriaKatalogLoading(false);
+        return;
+      }
+      if (!accessToken) {
+        if (cached.length > 0) setAkcesoriaKatalog(cached);
+        else alert('Autoryzuj Google Drive aby pobrać listę akcesoriów.');
+        setAkcesoriaKatalogLoading(false);
+        return;
+      }
+      const exportResp = await fetch(
+        'https://www.googleapis.com/drive/v3/files/' + AKCESORIA_SHEET_ID + '/export?mimeType=text%2Fcsv',
+        { headers: { Authorization: 'Bearer ' + accessToken } }
+      );
+      if (!exportResp.ok) throw new Error('HTTP ' + exportResp.status);
+      const text = await exportResp.text();
+      const lines = text.split('\n').filter(l => l.trim());
+      const result = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = [];
+        let cur = '', inQ = false;
+        for (const ch of lines[i]) {
+          if (ch === '"') { inQ = !inQ; }
+          else if (ch === ',' && !inQ) { cols.push(cur.trim()); cur = ''; }
+          else { cur += ch; }
+        }
+        cols.push(cur.trim());
+        if (cols[0]) result.push({ nazwa: cols[0], kod: cols[1] || '' });
+      }
+      if (result.length > 0) {
+        const existingNames = new Set(cached.map(e => e.nazwa));
+        const merged = [...cached, ...result.filter(r => !existingNames.has(r.nazwa))];
+        await setDoc(doc(db, 'katalogi', 'akcesoria'), { items: merged, updatedAt: new Date().toISOString() });
+        setAkcesoriaKatalog(merged);
+      }
     } catch(e) {
-      console.error('Blad pobierania katalogu akcesoriow:', e);
+      console.error('Blad katalogu akcesoriow:', e);
+      alert('Błąd pobierania akcesoriów: ' + e.message);
     } finally {
       setAkcesoriaKatalogLoading(false);
     }
@@ -1858,7 +1895,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.17</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.18</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2045,6 +2082,24 @@ export default function App() {
                             <div style={{ marginBottom: '1rem' }}>
                               <div style={{ fontSize: '12px', fontWeight: 'bold' }}>📝 Uwagi:</div>
                               <div style={{ fontSize: '13px', background: '#f9f9f9', padding: '6px', borderRadius: '4px' }}>{order.prestashopUwagi}</div>
+                            </div>
+                          )}
+
+                          {/* Trudny klient notatki */}
+                          {order.trudnyKlient && (
+                            <div style={{ background: '#ffebee', border: '1px solid #ef9a9a', borderRadius: '6px', padding: '8px', marginBottom: '1rem' }}>
+                              <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#c62828', marginBottom: '4px' }}>⚠️ TRUDNY KLIENT</div>
+                              {(order.trudnyKlientNotatki || []).map((n, i) => (
+                                <div key={i} style={{ fontSize: '12px', padding: '2px 0', borderBottom: '1px solid #ffcdd2' }}>
+                                  <span style={{ color: '#999' }}>{new Date(n.date).toLocaleDateString('pl-PL')}</span> — {n.text}
+                                </div>
+                              ))}
+                              {canManagePS && (
+                                <button className="btn" onClick={() => {
+                                  const note = window.prompt('Dodaj notatkę TK:');
+                                  if (note && note.trim()) handleAddTkNote(order.id, note.trim());
+                                }} style={{ fontSize: '11px', marginTop: '6px' }}>+ Dodaj notatkę</button>
+                              )}
                             </div>
                           )}
 
@@ -2662,6 +2717,8 @@ export default function App() {
                       // Auto-check gotowe when all done
                       if (allDone && !order.probkiGotowe) {
                         handleUpdateOrderField(order.id, 'probkiGotowe', true);
+                      } else if (!allDone && order.probkiGotowe && !order.probkiWyslane) {
+                        handleUpdateOrderField(order.id, 'probkiGotowe', false);
                       }
                       return (
                         <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
@@ -2839,8 +2896,8 @@ export default function App() {
 
                         {/* Gotowe + Wysłane */}
                         <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
-                          <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <input type="checkbox" checked={order.probkiGotowe || false} onChange={() => handleUpdateOrderField(order.id, 'probkiGotowe', !order.probkiGotowe)} /> Gotowe do wysyłki
+                          <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'default' }} title="Zaznacza się automatycznie gdy wszystkie pozycje są spakowane lub pominięte">
+                            <input type="checkbox" checked={order.probkiGotowe || false} readOnly style={{ cursor: 'default' }} /> Gotowe do wysyłki
                           </label>
                           <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.probkiGotowe ? 1 : 0.4 }}>
                             <input type="checkbox" checked={order.probkiWyslane || false} disabled={!order.probkiGotowe}
@@ -3060,6 +3117,11 @@ export default function App() {
           {activeTab === 'akcesoria' && (
             <div>
               <h2>🧩 Akcesoria ({akcesoriaOrders.length})</h2>
+              {accessToken && (
+                <button className="btn" onClick={() => fetchAkcesoriaKatalog(true)} disabled={akcesoriaKatalogLoading} style={{ fontSize: '12px', marginBottom: '6px' }} title="Pobiera nowe pozycje z arkusza Google, nie nadpisuje istniejących">
+                  {akcesoriaKatalogLoading ? '⏳' : '🔄'} Zaktualizuj listę akcesoriów
+                </button>
+              )}
               <button className="btn" onClick={() => {
                 const allBraki = [];
                 akcesoriaOrders.forEach(o => {
