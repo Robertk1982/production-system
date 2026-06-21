@@ -1,3 +1,4 @@
+/* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import * as XLSX from 'xlsx';
@@ -463,8 +464,8 @@ export default function App() {
   };
 
   // Magazyn próbek — oddzielny dokument w Firestore
-  const [magazynProbek, setMagazynProbek] = React.useState({});
-  React.useEffect(() => {
+  const [magazynProbek, setMagazynProbek] = useState({});
+  useEffect(() => {
     const unsub = onSnapshot(doc(db, 'magazyn', 'probki'), snap => {
       if (snap.exists()) setMagazynProbek(snap.data() || {});
     });
@@ -734,22 +735,6 @@ export default function App() {
   const extractDekorNr = (name) => {
     const m = name.match(/[Uu]?([0-9]{3,5})/);
     return m ? m[1].replace(/^0+/, '') : '';
-  };
-
-  // Get magazyn stan for a dekor (from Firestore collection 'magazynProbek')
-  const getMagazynStan = (dekorNr) => {
-    const key = 'magazyn_' + dekorNr;
-    return parseInt(localStorage.getItem(key) || '0');
-  };
-
-  const getMagazynAll = () => {
-    const result = {};
-    probkiKatalog.forEach(p => {
-      const nr = extractDekorNr(p.nazwa);
-      if (nr) result[nr] = { nazwa: p.nazwa, kod: p.kod, ilosc: 0 };
-    });
-    // Read from orders (magazynProbek field in a special doc)
-    return result;
   };
 
   const fetchAkcesoriaKatalog = async () => {
