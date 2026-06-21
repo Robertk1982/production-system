@@ -140,6 +140,7 @@ export default function App() {
   const [wyprodukujZlecone, setWyprodukujZlecone] = useState({});
   const [wyprodukujWyprodukowane, setWyprodukujWyprodukowane] = useState({});
   const [showZamowProbki, setShowZamowProbki] = useState(false);
+  const [showZamowProbkiPanel, setShowZamowProbkiPanel] = useState(false);
   const [zamowProbkiRows, setZamowProbkiRows] = useState([]);
   const [zamowProbkiSearchQ, setZamowProbkiSearchQ] = useState('');
   const [oczekiwanieSet, setOczekiwanieSet] = useState({});
@@ -2578,7 +2579,36 @@ export default function App() {
                   <div style={{ background: '#f5f5f5', border: '1px solid #ddd', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                       <h3 style={{ margin: 0 }}>🔨 Do wyprodukowania</h3>
+                      <button className="btn btn-primary" onClick={() => { fetchProbkiKatalog(); setShowZamowProbkiPanel(s => !s); }} style={{ fontSize: '11px' }}>
+                        {showZamowProbkiPanel ? '✕ Zamknij' : '📋 Zamów próbki'}
+                      </button>
                     </div>
+
+                    {showZamowProbkiPanel && (
+                      <div style={{ background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: '6px', padding: '10px', marginBottom: '12px' }}>
+                        <h4 style={{ margin: '0 0 8px' }}>📋 Zamów próbki</h4>
+                        <div style={{ position: 'relative', marginBottom: '6px' }}>
+                          <input type="text" value={zamowProbkiSearchQ} onChange={e => setZamowProbkiSearchQ(e.target.value)}
+                            onFocus={() => { if (probkiKatalog.length === 0) fetchProbkiKatalog(); if (!zamowProbkiSearchQ) setZamowProbkiSearchQ(' '); }}
+                            placeholder="Szukaj próbki do zamówienia..."
+                            style={{ width: '100%', padding: '6px', border: '1px solid #ffb74d', borderRadius: '4px', fontSize: '12px' }} />
+                          {zamowProbkiSearchQ.trim() && (
+                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '150px', overflow: 'auto', zIndex: 30, borderRadius: '4px' }}>
+                              {probkiKatalog.filter(p => { const q6 = zamowProbkiSearchQ.trim().toLowerCase(); return p.nazwa.toLowerCase().includes(q6) || extractDekorNr(p.nazwa).includes(q6) || p.nazwa.toLowerCase().replace(/\bu/gi,'').includes(q6); }).slice(0, 20).map((p, pi) => (
+                                <div key={pi} style={{ padding: '5px 8px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
+                                  onMouseEnter={e => e.currentTarget.style.background = '#fff3e0'}
+                                  onMouseLeave={e => e.currentTarget.style.background = ''}
+                                  onClick={async () => {
+                                    const newList = [...zamowProbkiRows, { nazwa: p.nazwa, dekorNr: extractDekorNr(p.nazwa), addedAt: new Date().toISOString(), user: currentUser?.name || '?' }];
+                                    setZamowProbkiRows(newList); await updateZamowProbkiList(newList); setZamowProbkiSearchQ('');
+                                  }}>{p.nazwa}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <button className="btn" onClick={() => setZamowProbkiSearchQ('')} style={{ fontSize: '10px' }}>✕ Zamknij wyszukiwanie</button>
+                      </div>
+                    )}
 
                     {pilne.length > 0 && (
                       <div style={{ marginBottom: '12px' }}>
