@@ -1895,7 +1895,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.18</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.19</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2086,7 +2086,7 @@ export default function App() {
                           )}
 
                           {/* Trudny klient notatki */}
-                          {order.trudnyKlient && (
+                          {(order.trudnyKlient || (order.trudnyKlientNotatki || []).length > 0) && (
                             <div style={{ background: '#ffebee', border: '1px solid #ef9a9a', borderRadius: '6px', padding: '8px', marginBottom: '1rem' }}>
                               <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#c62828', marginBottom: '4px' }}>⚠️ TRUDNY KLIENT</div>
                               {(order.trudnyKlientNotatki || []).map((n, i) => (
@@ -2436,7 +2436,7 @@ export default function App() {
                   const rows2 = [...rowsBase, ...extraRows.map(e => ({ name: e.nazwa, qty: e.qty, isExtra: true, extraIdx: e.idx }))];
                   rows2.forEach((r, i) => {
                     const rs = (ord.probkiRowStatus || [])[i] || {};
-                    if (rs.wyprodukuj && !rs.naOczekiwaniu) {
+                    if (rs.wyprodukuj) {
                       const dekorNr2 = extractDekorNr(r.name);
                       const dostepne2 = parseInt(magazynProbek[dekorNr2] || 0);
                       let totalNeeded = 0;
@@ -2448,7 +2448,7 @@ export default function App() {
                           if (!rs2.spakowane && extractDekorNr(rr.name) === dekorNr2) totalNeeded += parseInt(rr.qty || 1);
                         });
                       });
-                      const isPilne = dostepne2 < totalNeeded && !oczekiwanieSet[dekorNr2];
+                      const isPilne = dostepne2 < totalNeeded && !oczekiwanieSet[dekorNr2] && !(ord.probkiRowStatus || [])[i]?.naOczekiwaniu;
                       toWyprodukuj.push({ orderId: ord.id, orderDocId: ord.docId, rowIdx: i, name: r.name, qty: r.qty, dekorNr: dekorNr2, key: ord.id + '_' + i, isPilne, dostepne: dostepne2 });
                     }
                   });
@@ -2481,20 +2481,27 @@ export default function App() {
                               onChange={async () => {
                                 const newVal = !wyprodukujZlecone[item.key];
                                 setWyprodukujZlecone(prev => ({ ...prev, [item.key]: newVal }));
-                                if (newVal) {
-                                  // Mark this dekor as zlecone in all orders that have it
-                                  const dekorKey = item.dekorNr;
-                                  probkiOrders.forEach(async ord2 => {
-                                    const rows2 = parseProduktyFromRaw(ord2.prestashopData?.produkty || '');
-                                    rows2.forEach(async (rr, ii) => {
-                                      if (extractDekorNr(rr.name) === dekorKey) {
-                                        const ns2 = [...(ord2.probkiRowStatus || Array(rows2.length).fill({}))];
-                                        while (ns2.length < rows2.length) ns2.push({});
+                                const dekorKey = item.dekorNr;
+                                const allOrds = orders.filter(o => o.inProbki || o.probkiArchived);
+                                for (const ord2 of allOrds) {
+                                  const rows2 = parseProduktyFromRaw(ord2.prestashopData?.produkty || '');
+                                  const extra2 = (ord2.extraProbki || []).map(e => ({ name: e.nazwa, qty: e.qty }));
+                                  const allRows2 = [...rows2, ...extra2];
+                                  let changed = false;
+                                  const ns2 = [...(ord2.probkiRowStatus || Array(allRows2.length).fill({}))];
+                                  while (ns2.length < allRows2.length) ns2.push({});
+                                  allRows2.forEach((rr, ii) => {
+                                    if (extractDekorNr(rr.name) === dekorKey) {
+                                      if (newVal) {
                                         ns2[ii] = { ...ns2[ii], zleconeNaProdukcje: true };
-                                        await handleUpdateOrderField(ord2.id, 'probkiRowStatus', ns2);
+                                      } else {
+                                        // Uncheck: restore wyprodukuj, clear zlecone
+                                        ns2[ii] = { ...ns2[ii], zleconeNaProdukcje: false, wyprodukuj: true };
                                       }
-                                    });
+                                      changed = true;
+                                    }
                                   });
+                                  if (changed) await handleUpdateOrderField(ord2.id, 'probkiRowStatus', ns2);
                                 }
                               }} />
                           </td>
@@ -2564,7 +2571,7 @@ export default function App() {
                     {/* Trzecia tabelka: Zamów próbki — wygląd i działanie jak pilne/niepilne */}
                     <div style={{ marginBottom: '12px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#2e7d32' }}>📋 Zamów próbki (nie pilne — {zamowActive.length}):</div>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#2e7d32' }}>📋 Do wyprodukowania ({zamowActive.length}):</div>
                         <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowZamowProbki(!showZamowProbki); }} style={{ fontSize: '11px' }}>
                           {showZamowProbki ? '✕' : '+ Dodaj'}
                         </button>
@@ -3137,10 +3144,10 @@ export default function App() {
                 });
                 if (!allBraki.length) { alert('Brak aktywnych braków do zliczenia.'); return; }
                 const lines = ['Nazwa;Kod;Ilość', ...allBraki.map(b => b.nazwa + ';' + b.kod + ';' + b.ilosc)];
-                const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+                const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.href = url; a.download = 'braki_akcesoriow.txt'; a.click();
+                a.href = url; a.download = 'braki_akcesoriow.csv'; a.click();
                 URL.revokeObjectURL(url);
               }} style={{ fontSize: '12px', marginBottom: '8px' }}>📥 Zlicz brakujące akcesoria</button>
 
@@ -3332,6 +3339,7 @@ export default function App() {
                                   <thead>
                                     <tr style={{ background: '#f5f5f5' }}>
                                       <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'left' }}>Nazwa</th>
+                                      <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'left' }}>Kod</th>
                                       <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>Ilość</th>
                                       <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>Zamówione</th>
                                       <th style={{ padding: '3px 5px', border: '1px solid #ddd', textAlign: 'center' }}>Uzupełnione</th>
