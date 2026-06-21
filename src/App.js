@@ -1080,46 +1080,56 @@ export default function App() {
           });
         }
         // Auto-routing: konsultacje / próbki
-        const produktyStr = String(row['Produkty'] || '').toLowerCase().trim();
-        const isOnlyKonsultacje = produktyStr.includes('zdalna pomoc w konfiguracji mebla') &&
-          !parseProduktyFromRaw(String(row['Produkty'] || '')).some(p => !p.name.toLowerCase().includes('zdalna pomoc'));
-        const isOnlyProbki = parseProduktyFromRaw(String(row['Produkty'] || '')).length > 0 &&
-          parseProduktyFromRaw(String(row['Produkty'] || '')).every(p => p.name.toLowerCase().includes('próbka') || p.name.toLowerCase().includes('probka'));
+        const produktyRaw2 = String(row['Produkty'] || '');
+        const parsedProds = parseProduktyFromRaw(produktyRaw2);
+        const hasProbka = parsedProds.some(p => p.name.toLowerCase().includes('próbka') || p.name.toLowerCase().includes('probka'));
+        const hasZdalna = parsedProds.some(p => p.name.toLowerCase().includes('zdalna pomoc'));
+        const isOnlyZdalna = hasZdalna && parsedProds.every(p => p.name.toLowerCase().includes('zdalna pomoc'));
+        const hasOtherThanZdalna = hasZdalna && !isOnlyZdalna;
 
-        if (isOnlyKonsultacje || isOnlyProbki) {
-          const type = isOnlyKonsultacje ? 'Konsultacje' : 'Próbki';
-          const choice = window.confirm(
-            'Zamówienie #' + orderId + ' zawiera tylko: ' + (isOnlyKonsultacje ? '"Zdalna pomoc w konfiguracji mebla"' : 'produkty typu Próbka') +
-            '\n\nOK = Przenieś do ' + type +
-            '\nAnuluj = Pozostaw w Prestashop'
-          );
-          if (choice) {
-            const targetRef = isOnlyKonsultacje
-              ? { inKonsultacje: true, inPrestashop: false }
-              : { inProbki: true, inPrestashop: false };
-            const existOrder = orders.find(o => o.id === orderId);
-            if (existOrder) {
-              await updateDoc(doc(db, 'orders', existOrder.docId), { ...targetRef, history: [...(existOrder.history || []), historyEntry('Auto-przeniesiono do ' + type)] });
-            } else {
-              await addDoc(collection(db, 'orders'), {
-                id: orderId, status: 'none', createdAt: new Date().toISOString(),
-                problems: [], photoCount: 0, photoArchived: false,
-                ...targetRef,
-                prestashopData: {
-                  dataDodania: toDisplayDate(String(row['Data dodania'] || '')),
-                  dataRealizacji: String(row['Data Realizacji'] || ''),
-                  transport: String(row['Transport'] || ''),
-                  wartosc: String(row['Wartość zamówienia'] || ''),
-                  kodPocztowy: String(row['Kod pocztowy klienta'] || ''),
-                  produkty: String(row['Produkty'] || ''),
-                  dekoryRaw: String(row['Dekory'] || '')
-                },
-                history: [historyEntry('Import z Excel → ' + type)]
-              });
-            }
-            added++;
-            continue;
+        const buildPsData2 = () => ({
+          dataDodania: toDisplayDate(String(row['Data dodania'] || '')),
+          dataRealizacji: String(row['Data Realizacji'] || ''),
+          transport: String(row['Transport'] || ''),
+          wartosc: String(row['Wartość zamówienia'] || ''),
+          kodPocztowy: String(row['Kod pocztowy klienta'] || ''),
+          produkty: produktyRaw2,
+          dekoryRaw: String(row['Dekory'] || '')
+        });
+
+        const saveToTarget = async (targetFlags) => {
+          const existOrder = orders.find(o => o.id === orderId);
+          if (existOrder) {
+            await updateDoc(doc(db, 'orders', existOrder.docId), { ...targetFlags, prestashopData: buildPsData2(), history: [...(existOrder.history || []), historyEntry('Auto-import → ' + JSON.stringify(targetFlags))] });
+          } else {
+            await addDoc(collection(db, 'orders'), { id: orderId, status: 'none', createdAt: new Date().toISOString(), problems: [], photoCount: 0, photoArchived: false, ...targetFlags, prestashopData: buildPsData2(), history: [historyEntry('Import z Excel')] });
           }
+        };
+
+        // Probki: any product with próbka/probka -> auto to probki, no questions
+        if (hasProbka) {
+          await saveToTarget({ inProbki: true, inPrestashop: false });
+          added++;
+          continue;
+        }
+
+        // Konsultacje: ONLY zdalna -> auto to konsultacje
+        if (isOnlyZdalna) {
+          await saveToTarget({ inKonsultacje: true, inPrestashop: false });
+          added++;
+          continue;
+        }
+
+        // Zdalna + inne produkty -> zapytaj
+        if (hasOtherThanZdalna) {
+          const choice = window.confirm('Zamówienie #' + orderId + ' zawiera "Zdalna pomoc" oraz inne produkty.\n\nOK = Przenieś do Konsultacje\nAnuluj = Pozostaw w Prestashop');
+          if (choice) {
+            await saveToTarget({ inKonsultacje: true, inPrestashop: false });
+          } else {
+            await saveToTarget({ inPrestashop: true });
+          }
+          added++;
+          continue;
         }
 
         added++;
@@ -1399,27 +1409,34 @@ export default function App() {
   // Parse produkty from XLS column 2 into structured rows
   const parseProduktyFromRaw = (raw) => {
     if (!raw) return [];
-    // Format: "1 x Nazwa produktu (cena PLN / szt. | szer. Xmm | wys. Ymm | gl. Zmm | ...)"
+    // Split on pattern: newline or space before "N x " where N is quantity at start of product
+    // Use lookahead that matches ONLY "1 x", "2 x" etc. preceded by newline or start
     const results = [];
-    const parts = raw.split(/(?=\d+ x )/);
-    for (const part of parts) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-      const qtyMatch = trimmed.match(/^(\d+) x (.+)/);
-      if (!qtyMatch) continue;
-      const qty = qtyMatch[1];
-      const rest = qtyMatch[2];
-      const parenIdx = rest.indexOf('(');
-      const name = parenIdx > -1 ? rest.substring(0, parenIdx).trim() : rest.trim();
-      let wys = '', szer = '', gl = '';
-      const wysMatch = rest.match(/wys\.?\s*(\d+)\s*mm/i);
-      const szerMatch = rest.match(/szer\.?\s*(\d+)\s*mm/i);
-      const glMatch = rest.match(/g[lł]\.?\s*(\d+)\s*mm/i);
-      if (wysMatch) wys = wysMatch[1];
-      if (szerMatch) szer = szerMatch[1];
-      if (glMatch) gl = glMatch[1];
-      results.push({ name, qty, wys, szer, gl, link: '' });
+    // Split by pattern: "\n1 x " or "\n2 x " etc — product separator
+    // Also handle when products are separated by newlines
+    const lines = raw.split('\n').map(l => l.trim()).filter(l => l);
+    let currentProduct = null;
+    for (const line of lines) {
+      const qtyMatch = line.match(/^(\d+) x (.+)/);
+      if (qtyMatch) {
+        if (currentProduct) results.push(currentProduct);
+        const qty = qtyMatch[1];
+        const rest = qtyMatch[2];
+        // Name = everything before first "(" 
+        const parenIdx = rest.indexOf('(');
+        const name = parenIdx > -1 ? rest.substring(0, parenIdx).trim() : rest.trim();
+        let wys = '', szer = '', gl = '';
+        const wysMatch = rest.match(/wys\.?\s*(\d+)\s*mm/i);
+        const szerMatch = rest.match(/szer\.?\s*(\d+)\s*mm/i);
+        const glMatch = rest.match(/g[lł]\.?\s*(\d+)\s*mm/i);
+        if (wysMatch) wys = wysMatch[1];
+        if (szerMatch) szer = szerMatch[1];
+        if (glMatch) gl = glMatch[1];
+        currentProduct = { name, qty, wys, szer, gl, link: '' };
+      }
+      // Ignore continuation lines (like "200" from "250 x 200")
     }
+    if (currentProduct) results.push(currentProduct);
     return results;
   };
 
@@ -1762,7 +1779,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.8</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.9</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2062,22 +2079,113 @@ export default function App() {
               <div className="search-box"><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj..." /></div>
               {probkiOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
                 const ps = order.prestashopData || {};
+                const rows = parseProduktyFromRaw(ps.produkty || '');
                 return (
                   <React.Fragment key={order.docId}>
                     <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                         <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                        {ps.dataRealizacji && <span style={{ fontSize: '13px' }}>📅 {ps.dataRealizacji}</span>}
-                        {ps.transport && <span style={{ fontSize: '11px', color: '#666' }}>{ps.transport.substring(0, 40)}</span>}
+                        {ps.dataDodania && <span style={{ fontSize: '12px', color: '#666' }}>📅 {ps.dataDodania}</span>}
+                        {ps.transport && <span style={{ fontSize: '11px', color: '#888' }}>{ps.transport.substring(0, 35)}</span>}
+                        {order.probkiGotowe && order.probkiWyslane && <span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>✅ wysłane</span>}
                       </div>
                     </div>
                     {selectedOrderId === order.id && (
-                      <div className="card">
-                        <div style={{ fontSize: '13px' }}><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
-                        <div style={{ fontSize: '13px' }}><strong>Data realizacji:</strong> {ps.dataRealizacji || '—'}</div>
-                        <div style={{ fontSize: '13px' }}><strong>Transport:</strong> {ps.transport || '—'}</div>
-                        <div style={{ fontSize: '13px' }}><strong>Wartość:</strong> {ps.wartosc || '—'} zł</div>
-                        <div style={{ fontSize: '13px', marginTop: '6px' }}><strong>Produkty:</strong> {ps.produkty || '—'}</div>
+                      <div className="card" style={{ borderLeft: '3px solid #9c27b0' }}>
+                        <div style={{ fontSize: '13px', marginBottom: '8px' }}>
+                          <div><strong>Data dodania:</strong> {ps.dataDodania || '—'}</div>
+                          <div><strong>Transport:</strong> {ps.transport || '—'}</div>
+                        </div>
+
+                        {/* Tabela produktów — tylko nazwa, ilość, dostępne, spakowane, wyprodukuj */}
+                        {rows.length > 0 && (
+                          <div style={{ marginBottom: '1rem', overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                              <thead>
+                                <tr style={{ background: '#f3e5f5' }}>
+                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'left' }}>Nazwa próbki</th>
+                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Ilość</th>
+                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Dostępne</th>
+                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Spakowane</th>
+                                  <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Wyprodukuj</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {rows.map((r, i) => {
+                                  const rowStatus = (order.probkiRowStatus || [])[i] || {};
+                                  return (
+                                    <tr key={i}>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{r.name}</td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>{r.qty}</td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                        <input type="text" defaultValue={rowStatus.dostepne || ''} placeholder="—"
+                                          onBlur={e => {
+                                            const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
+                                            while (ns.length < rows.length) ns.push({});
+                                            ns[i] = { ...ns[i], dostepne: e.target.value };
+                                            handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
+                                          }} style={{ width: '50px', textAlign: 'center', border: '1px solid #ddd', borderRadius: '3px', padding: '2px' }} />
+                                      </td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                        <input type="checkbox" checked={rowStatus.spakowane || false} onChange={() => {
+                                          const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
+                                          while (ns.length < rows.length) ns.push({});
+                                          ns[i] = { ...ns[i], spakowane: !rowStatus.spakowane };
+                                          handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
+                                        }} />
+                                      </td>
+                                      <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                                        <input type="checkbox" checked={rowStatus.wyprodukuj || false} onChange={() => {
+                                          const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
+                                          while (ns.length < rows.length) ns.push({});
+                                          ns[i] = { ...ns[i], wyprodukuj: !rowStatus.wyprodukuj };
+                                          handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
+                                        }} />
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {/* Uwagi */}
+                        <div style={{ marginBottom: '8px' }}>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', marginBottom: '3px' }}>📝 Uwagi:</label>
+                          <textarea defaultValue={order.probkiUwagi || ''} onBlur={e => { if (e.target.value !== (order.probkiUwagi || '')) handleUpdateOrderField(order.id, 'probkiUwagi', e.target.value); }} placeholder="Uwagi..." style={{ width: '100%', height: '50px' }} />
+                        </div>
+
+                        {/* Pliki — upload do folderu próbek */}
+                        <div style={{ background: '#e0f2f1', border: '1px solid #80cbc4', borderRadius: '6px', padding: '8px', marginBottom: '8px' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px' }}>📎 Pliki:</div>
+                          {accessToken
+                            ? <input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadAttachment(order.id, f, '1PBQalfDxjuXNmaMU7f3au_lzT3FX0Iqw'); e.target.value = ''; }} style={{ fontSize: '12px' }} />
+                            : <button className="btn btn-primary" onClick={handleAuthorizeGoogle} style={{ fontSize: '12px' }}>🔐 Autoryzuj Drive</button>}
+                          {(order.attachments || []).map((att, idx) => (
+                            <div key={idx} style={{ fontSize: '11px', marginTop: '3px' }}>
+                              <a href={att.driveLink || '#'} target="_blank" rel="noreferrer" style={{ color: '#00695c' }}>📄 {att.name}</a>
+                            </div>
+                          ))}
+                          {orderMessages[order.id] && <div style={{ fontSize: '11px', marginTop: '4px', color: orderMessages[order.id].includes('✅') ? '#2e7d32' : '#c62828' }}>{orderMessages[order.id]}</div>}
+                        </div>
+
+                        {/* Gotowe do wysyłki + Wysłane */}
+                        <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
+                          <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <input type="checkbox" checked={order.probkiGotowe || false} onChange={() => handleUpdateOrderField(order.id, 'probkiGotowe', !order.probkiGotowe)} /> Gotowe do wysyłki
+                          </label>
+                          <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <input type="checkbox" checked={order.probkiWyslane || false} onChange={() => handleUpdateOrderField(order.id, 'probkiWyslane', !order.probkiWyslane)} /> Wysłane
+                          </label>
+                        </div>
+
+                        {order.probkiGotowe && order.probkiWyslane && (
+                          <button className="btn btn-success" onClick={async () => {
+                            const orderRef2 = doc(db, 'orders', order.docId);
+                            await updateDoc(orderRef2, { probkiArchived: true, inProbki: false, history: [...(order.history || []), historyEntry('Przeniesiono do archiwum próbek')] });
+                          }} style={{ width: '100%', fontSize: '13px' }}>🗄️ Przenieś do archiwum</button>
+                        )}
                       </div>
                     )}
                   </React.Fragment>
@@ -2440,33 +2548,42 @@ export default function App() {
                                   {akcesoriaKatalogLoading && <p style={{ fontSize: '11px', color: '#999' }}>Ładowanie...</p>}
                                   <div style={{ maxHeight: '160px', overflow: 'auto' }}>
                                     {(() => {
-                                      const q = (brakiSearchQuery.split('__').pop() || '').toLowerCase();
-                                      const filtered2 = q ? akcesoriaKatalog.filter(a => a.nazwa.toLowerCase().includes(q) || a.kod.toLowerCase().includes(q)) : akcesoriaKatalog;
-                                      if (filtered2.length === 0 && q) {
-                                        return (
-                                          <div>
-                                            <p style={{ fontSize: '11px', color: '#999' }}>Nie znaleziono — możesz dodać ręcznie:</p>
-                                            <button className="btn" onClick={() => {
-                                              const il = window.prompt('Ilość:');
-                                              if (!il) return;
-                                              aktualizujBraki([...braki, { nazwa: q, kod: '', ilosc: il.trim(), zamowione: false, uzupelnione: false }]);
+                                      const rawQ = brakiSearchQuery.includes('__') ? brakiSearchQuery.split('__').pop() : '';
+                                      const q = rawQ.toLowerCase();
+                                      const filtered2 = q.length > 0 ? akcesoriaKatalog.filter(a => a.nazwa.toLowerCase().includes(q) || a.kod.toLowerCase().includes(q)) : akcesoriaKatalog;
+                                      const showManual = q.length > 1 && filtered2.length === 0;
+                                      return (
+                                        <>
+                                          {showManual && (
+                                            <div style={{ padding: '6px', background: '#fff3e0', borderRadius: '4px', marginBottom: '4px' }}>
+                                              <p style={{ fontSize: '11px', color: '#e65100', margin: '0 0 4px' }}>Nie znaleziono "{rawQ}" w katalogu</p>
+                                              <button className="btn btn-primary" onClick={() => {
+                                                const nazwaR = window.prompt('Nazwa akcesorium:', rawQ);
+                                                if (!nazwaR || !nazwaR.trim()) return;
+                                                const ilR = window.prompt('Ilość:');
+                                                if (!ilR || !ilR.trim()) return;
+                                                aktualizujBraki([...braki, { nazwa: nazwaR.trim(), kod: '', ilosc: ilR.trim(), zamowione: false, uzupelnione: false }]);
+                                                setBrakiSearchQuery('');
+                                              }} style={{ fontSize: '11px' }}>+ Dodaj ręcznie</button>
+                                            </div>
+                                          )}
+                                          {filtered2.slice(0, 30).map((a, ai) => (
+                                            <div key={ai} onClick={() => {
+                                              const il = window.prompt('Ilość dla:\n' + a.nazwa + (a.kod ? ' (' + a.kod + ')' : '') + ':');
+                                              if (!il || !il.trim()) return;
+                                              aktualizujBraki([...braki, { nazwa: a.nazwa, kod: a.kod, ilosc: il.trim(), zamowione: false, uzupelnione: false }]);
                                               setBrakiSearchQuery('');
-                                            }} style={{ fontSize: '11px' }}>+ Dodaj ręcznie</button>
-                                          </div>
-                                        );
-                                      }
-                                      return filtered2.slice(0, 30).map((a, ai) => (
-                                        <div key={ai} onClick={() => {
-                                          const il = window.prompt('Ilość dla: ' + a.nazwa + ' (' + a.kod + '):');
-                                          if (!il) return;
-                                          aktualizujBraki([...braki, { nazwa: a.nazwa, kod: a.kod, ilosc: il.trim(), zamowione: false, uzupelnione: false }]);
-                                          setBrakiSearchQuery('');
-                                        }} style={{ padding: '4px 6px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '11px' }}
-                                          onMouseEnter={e => e.currentTarget.style.background = '#e3f2fd'}
-                                          onMouseLeave={e => e.currentTarget.style.background = ''}>
-                                          <strong>{a.nazwa}</strong> <span style={{ color: '#666' }}>{a.kod}</span>
-                                        </div>
-                                      ));
+                                            }} style={{ padding: '5px 8px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '11px' }}
+                                              onMouseEnter={e => e.currentTarget.style.background = '#e3f2fd'}
+                                              onMouseLeave={e => e.currentTarget.style.background = ''}>
+                                              <strong>{a.nazwa}</strong> {a.kod && <span style={{ color: '#888', marginLeft: '6px' }}>{a.kod}</span>}
+                                            </div>
+                                          ))}
+                                          {filtered2.length === 0 && !showManual && akcesoriaKatalog.length === 0 && (
+                                            <p style={{ fontSize: '11px', color: '#999', padding: '4px' }}>Wpisz frazę aby wyszukać w katalogu...</p>
+                                          )}
+                                        </>
+                                      );
                                     })()}
                                   </div>
                                   <button className="btn" onClick={() => setBrakiSearchQuery('')} style={{ fontSize: '10px', marginTop: '4px' }}>✕ Zamknij</button>
