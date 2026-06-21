@@ -140,6 +140,11 @@ export default function App() {
   const [showPominieteLista, setShowPominieteLista] = useState(false);
   const [showWyprodukujPanel, setShowWyprodukujPanel] = useState(false);
   const [wyprodukujZlecone, setWyprodukujZlecone] = useState({});
+  const [wyprodukujWyprodukowane, setWyprodukujWyprodukowane] = useState({});
+  const [showZamowProbki, setShowZamowProbki] = useState(false);
+  const [zamowProbkiRows, setZamowProbkiRows] = useState([]);
+  const [zamowProbkiSearchQ, setZamowProbkiSearchQ] = useState('');
+  const [oczekiwanieSet, setOczekiwanieSet] = useState({});
   const [konsultacjeDataQ, setKonsultacjeDataQ] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -478,8 +483,16 @@ export default function App() {
         if (cached.length > 0) setProbkiKatalog(cached);
       }
     }).catch(() => {});
+    // Load zamow probki list
+    getDoc(doc(db, 'magazyn', 'zamowProbki')).then(snap => {
+      if (snap.exists()) setZamowProbkiRows(snap.data().items || []);
+    }).catch(() => {});
     return unsub;
   }, []);
+
+  const updateZamowProbkiList = async (newList) => {
+    await setDoc(doc(db, 'magazyn', 'zamowProbki'), { items: newList, updatedAt: new Date().toISOString() });
+  };
 
   const updateMagazynProbek = async (dekorNr, delta, logEntry) => {
     const current = parseInt(magazynProbek[dekorNr] || 0);
@@ -1835,7 +1848,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.13</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.14</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2347,7 +2360,7 @@ export default function App() {
 
               {/* Panel Do wyprodukowania */}
               {showWyprodukujPanel && (() => {
-                // Collect all rows with wyprodukuj=true from all probki orders
+                // Build list: all wyprodukuj rows not yet spakowane
                 const toWyprodukuj = [];
                 probkiOrders.forEach(ord => {
                   const ps2 = ord.prestashopData || {};
@@ -2356,47 +2369,204 @@ export default function App() {
                     const rs = (ord.probkiRowStatus || [])[i] || {};
                     if (rs.wyprodukuj && !rs.spakowane) {
                       const dekorNr2 = extractDekorNr(r.name);
-                      toWyprodukuj.push({ orderId: ord.id, orderDocId: ord.docId, rowIdx: i, name: r.name, qty: r.qty, dekorNr: dekorNr2, key: ord.id + '_' + i });
+                      const dostepne2 = parseInt(magazynProbek[dekorNr2] || 0);
+                      // Check total needed across all orders for this dekor
+                      let totalNeeded = 0;
+                      probkiOrders.forEach(o2 => {
+                        const r2 = parseProduktyFromRaw((o2.prestashopData?.produkty) || '');
+                        r2.forEach((rr, ii) => {
+                          const rs2 = (o2.probkiRowStatus || [])[ii] || {};
+                          if (!rs2.spakowane && extractDekorNr(rr.name) === dekorNr2) totalNeeded += parseInt(rr.qty || 1);
+                        });
+                      });
+                      const isPilne = dostepne2 < totalNeeded && !oczekiwanieSet[dekorNr2];
+                      toWyprodukuj.push({ orderId: ord.id, orderDocId: ord.docId, rowIdx: i, name: r.name, qty: r.qty, dekorNr: dekorNr2, key: ord.id + '_' + i, isPilne, dostepne: dostepne2 });
                     }
                   });
                 });
+                const pilne = toWyprodukuj.filter(x => x.isPilne);
+                const niepilne = toWyprodukuj.filter(x => !x.isPilne);
+
+                const WyprodukujTabela = ({ items, isPilne }) => (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', marginBottom: '8px' }}>
+                    <thead><tr style={{ background: isPilne ? '#ffcdd2' : '#c8e6c9' }}>
+                      <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'left' }}>Próbka</th>
+                      <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Szt.</th>
+                      <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Zam.</th>
+                      <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Dostępne</th>
+                      <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Zlecone</th>
+                      <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Wyprodukowane</th>
+                      {isPilne && <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Oczekiwanie</th>}
+                    </tr></thead>
+                    <tbody>
+                      {items.map(item => (
+                        <tr key={item.key} style={{ background: wyprodukujZlecone[item.key] ? '#e8f5e9' : '' }}>
+                          <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{item.name}</td>
+                          <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>{item.qty}</td>
+                          <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center', fontSize: '11px' }}>#{item.orderId}</td>
+                          <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center', color: item.dostepne > 0 ? '#2e7d32' : '#999' }}>{item.dostepne}</td>
+                          <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                            <input type="checkbox" checked={wyprodukujZlecone[item.key] || false}
+                              onChange={async () => {
+                                const newVal = !wyprodukujZlecone[item.key];
+                                setWyprodukujZlecone(prev => ({ ...prev, [item.key]: newVal }));
+                                if (newVal) {
+                                  // Mark this dekor as zlecone in all orders that have it
+                                  const dekorKey = item.dekorNr;
+                                  probkiOrders.forEach(async ord2 => {
+                                    const rows2 = parseProduktyFromRaw(ord2.prestashopData?.produkty || '');
+                                    rows2.forEach(async (rr, ii) => {
+                                      if (extractDekorNr(rr.name) === dekorKey) {
+                                        const ns2 = [...(ord2.probkiRowStatus || Array(rows2.length).fill({}))];
+                                        while (ns2.length < rows2.length) ns2.push({});
+                                        ns2[ii] = { ...ns2[ii], zleconeNaProdukcje: true };
+                                        await handleUpdateOrderField(ord2.id, 'probkiRowStatus', ns2);
+                                      }
+                                    });
+                                  });
+                                }
+                              }} />
+                          </td>
+                          <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                            <input type="checkbox" checked={wyprodukujWyprodukowane[item.key] || false}
+                              onChange={async () => {
+                                if (wyprodukujWyprodukowane[item.key]) return;
+                                const il = window.prompt('Ile sztuk wyprodukowano? (' + item.name + ')');
+                                if (!il || isNaN(parseInt(il))) return;
+                                const ilN = parseInt(il);
+                                setWyprodukujWyprodukowane(prev => ({ ...prev, [item.key]: true }));
+                                // Add to magazyn
+                                if (item.dekorNr) await updateMagazynProbek(item.dekorNr, ilN, { type: 'wyprodukowanie', orderId: item.orderId, user: currentUser?.name || currentUser?.email || '?' });
+                                // Uncheck wyprodukuj in order
+                                const ord2 = orders.find(o => o.id === item.orderId);
+                                if (ord2) {
+                                  const rows2 = parseProduktyFromRaw(ord2.prestashopData?.produkty || '');
+                                  const ns2 = [...(ord2.probkiRowStatus || Array(rows2.length).fill({}))];
+                                  while (ns2.length < rows2.length) ns2.push({});
+                                  ns2[item.rowIdx] = { ...ns2[item.rowIdx], wyprodukuj: false };
+                                  await handleUpdateOrderField(item.orderId, 'probkiRowStatus', ns2);
+                                }
+                              }} />
+                          </td>
+                          {isPilne && (
+                            <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
+                              <input type="checkbox" checked={oczekiwanieSet[item.dekorNr] || false}
+                                title="Przenieś do niepilnych — pojawi się info o korekcie w zamówieniach"
+                                onChange={async () => {
+                                  const newOczek = { ...oczekiwanieSet, [item.dekorNr]: true };
+                                  setOczekiwanieSet(newOczek);
+                                  // Mark in all orders with this dekor that it's on hold
+                                  probkiOrders.forEach(async ord2 => {
+                                    const rows2 = parseProduktyFromRaw(ord2.prestashopData?.produkty || '');
+                                    rows2.forEach(async (rr, ii) => {
+                                      if (extractDekorNr(rr.name) === item.dekorNr) {
+                                        const ns2 = [...(ord2.probkiRowStatus || Array(rows2.length).fill({}))];
+                                        while (ns2.length < rows2.length) ns2.push({});
+                                        ns2[ii] = { ...ns2[ii], naOczekiwaniu: true };
+                                        await handleUpdateOrderField(ord2.id, 'probkiRowStatus', ns2);
+                                      }
+                                    });
+                                  });
+                                }} />
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+
                 return (
-                  <div style={{ background: '#e8f5e9', border: '1px solid #a5d6a7', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
-                    <h3 style={{ margin: '0 0 8px' }}>🔨 Do wyprodukowania ({toWyprodukuj.length} pozycji)</h3>
-                    {toWyprodukuj.length === 0 && <p style={{ fontSize: '12px', color: '#666' }}>Brak zaznaczonych do wyprodukowania.</p>}
-                    {toWyprodukuj.length > 0 && (
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', marginBottom: '8px' }}>
-                        <thead><tr style={{ background: '#c8e6c9' }}>
-                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'left' }}>Próbka</th>
-                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Ilość</th>
-                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Zamówienie</th>
-                          <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Zlecone na prod.</th>
-                        </tr></thead>
-                        <tbody>
-                          {toWyprodukuj.map(item => (
-                            <tr key={item.key} style={{ background: wyprodukujZlecone[item.key] ? '#e8f5e9' : '' }}>
-                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9' }}>{item.name}</td>
-                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>{item.qty}</td>
-                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>#{item.orderId}</td>
-                              <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
-                                <input type="checkbox" checked={wyprodukujZlecone[item.key] || false}
-                                  onChange={async () => {
-                                    const newVal = !wyprodukujZlecone[item.key];
-                                    setWyprodukujZlecone(prev => ({ ...prev, [item.key]: newVal }));
-                                    // Check if all items for this order are zlecone
-                                    const orderItems = toWyprodukuj.filter(x => x.orderId === item.orderId);
-                                    const allZlecone = orderItems.every(x => x.key === item.key ? newVal : (wyprodukujZlecone[x.key] || false));
-                                    if (allZlecone && newVal) {
-                                      const ord2 = orders.find(o => o.id === item.orderId);
-                                      if (ord2) await handleUpdateOrderField(item.orderId, 'probkiZleconeNaProdukcje', true);
-                                    }
-                                  }} />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                  <div style={{ background: '#f5f5f5', border: '1px solid #ddd', borderRadius: '8px', padding: '12px', marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <h3 style={{ margin: 0 }}>🔨 Do wyprodukowania</h3>
+                      <button className="btn btn-primary" onClick={() => setShowZamowProbki(!showZamowProbki)} style={{ fontSize: '11px' }}>
+                        {showZamowProbki ? '✕' : '📋 Zamów próbki'}
+                      </button>
+                    </div>
+
+                    {/* Panel zamów próbki */}
+                    {showZamowProbki && (
+                      <div style={{ background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: '6px', padding: '10px', marginBottom: '12px' }}>
+                        <h4 style={{ margin: '0 0 8px' }}>📋 Zamów próbki (nie pilne)</h4>
+                        <div style={{ position: 'relative', marginBottom: '6px' }}>
+                          <input type="text" value={zamowProbkiSearchQ} onChange={e => setZamowProbkiSearchQ(e.target.value)}
+                            onFocus={() => { if (probkiKatalog.length === 0) fetchProbkiKatalog(); if (!zamowProbkiSearchQ) setZamowProbkiSearchQ(' '); }}
+                            placeholder="Szukaj próbki do zamówienia..."
+                            style={{ width: '100%', padding: '6px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '12px' }} />
+                          {zamowProbkiSearchQ.trim() && (
+                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '150px', overflow: 'auto', zIndex: 10, borderRadius: '4px' }}>
+                              {probkiKatalog.filter(p => p.nazwa.toLowerCase().includes(zamowProbkiSearchQ.trim().toLowerCase()) || extractDekorNr(p.nazwa).includes(zamowProbkiSearchQ.trim())).slice(0, 20).map((p, pi) => (
+                                <div key={pi} style={{ padding: '5px 8px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
+                                  onMouseEnter={e => e.currentTarget.style.background = '#fff3e0'}
+                                  onMouseLeave={e => e.currentTarget.style.background = ''}
+                                  onClick={async () => {
+                                    const newList = [...zamowProbkiRows, { nazwa: p.nazwa, dekorNr: extractDekorNr(p.nazwa), addedAt: new Date().toISOString(), user: currentUser?.name || '?' }];
+                                    setZamowProbkiRows(newList);
+                                    await updateZamowProbkiList(newList);
+                                    setZamowProbkiSearchQ('');
+                                  }}>
+                                  {p.nazwa}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        {zamowProbkiRows.length > 0 && (
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', marginTop: '6px' }}>
+                            <thead><tr style={{ background: '#ffe0b2' }}>
+                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'left' }}>Próbka</th>
+                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'center' }}>Zlecone</th>
+                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'center' }}>Wyprod.</th>
+                              <th style={{ padding: '3px 6px', border: '1px solid #ffb74d', textAlign: 'center' }}>Usuń</th>
+                            </tr></thead>
+                            <tbody>
+                              {zamowProbkiRows.map((zr, zi) => (
+                                <tr key={zi}>
+                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2' }}>{zr.nazwa}</td>
+                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2', textAlign: 'center' }}>
+                                    <input type="checkbox" checked={zr.zlecone || false} onChange={async () => {
+                                      const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, zlecone: !x.zlecone } : x);
+                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                    }} />
+                                  </td>
+                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2', textAlign: 'center' }}>
+                                    <input type="checkbox" checked={zr.wyprodukowane || false} onChange={async () => {
+                                      if (zr.wyprodukowane) return;
+                                      const il = window.prompt('Ile sztuk dodać do magazynu? (' + zr.nazwa + ')');
+                                      if (!il || isNaN(parseInt(il))) return;
+                                      if (zr.dekorNr) await updateMagazynProbek(zr.dekorNr, parseInt(il), { type: 'wyprodukowanie-zamow', user: currentUser?.name || '?' });
+                                      const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, wyprodukowane: true } : x);
+                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                    }} />
+                                  </td>
+                                  <td style={{ padding: '3px 6px', border: '1px solid #ffe0b2', textAlign: 'center' }}>
+                                    <button onClick={async () => {
+                                      const nl = zamowProbkiRows.filter((_, j) => j !== zi);
+                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                    }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
                     )}
+
+                    {pilne.length > 0 && (
+                      <div style={{ marginBottom: '12px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#c62828', marginBottom: '4px' }}>🚨 PILNE — niewystarczające stany:</div>
+                        <WyprodukujTabela items={pilne} isPilne={true} />
+                      </div>
+                    )}
+                    {niepilne.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#555', marginBottom: '4px' }}>📋 Do wyprodukowania:</div>
+                        <WyprodukujTabela items={niepilne} isPilne={false} />
+                      </div>
+                    )}
+                    {toWyprodukuj.length === 0 && <p style={{ fontSize: '12px', color: '#666' }}>Brak zaznaczonych do wyprodukowania.</p>}
                   </div>
                 );
               })()}
@@ -2439,14 +2609,38 @@ export default function App() {
                 const rows = parseProduktyFromRaw(ps.produkty || '');
                 return (
                   <React.Fragment key={order.docId}>
-                    <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                        <h3 style={{ margin: 0 }}>#{order.id}</h3>
-                        {ps.dataDodania && <span style={{ fontSize: '12px', color: '#666' }}>📅 {ps.dataDodania}</span>}
-                        {ps.transport && <span style={{ fontSize: '11px', color: '#888' }}>{ps.transport.substring(0, 30)}</span>}
-                        {order.probkiGotowe && order.probkiWyslane && <span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>✅ wysłane</span>}
-                      </div>
-                    </div>
+                    {(() => {
+                      const rows2 = parseProduktyFromRaw(ps.produkty || '');
+                      const allStatuses = rows2.map((r2, i2) => {
+                        const rs2 = (order.probkiRowStatus || [])[i2] || {};
+                        const nr2 = extractDekorNr(r2.name);
+                        const dostepne2 = parseInt(magazynProbek[nr2] || 0);
+                        const qty2 = parseInt(r2.qty || 1);
+                        return { ...rs2, dostepne: dostepne2, qty: qty2, name: r2.name };
+                      });
+                      const allDone = allStatuses.length > 0 && allStatuses.every(s => s.spakowane || s.pomin);
+                      const allAvail = allStatuses.length > 0 && allStatuses.every(s => s.spakowane || s.pomin || s.dostepne >= s.qty);
+                      const hasWyprodukuj = allStatuses.some(s => s.wyprodukuj && !s.spakowane && !s.zleconeNaProdukcje);
+                      const hasZlecone = allStatuses.some(s => s.zleconeNaProdukcje && !s.spakowane);
+                      // Auto-check gotowe when all done
+                      if (allDone && !order.probkiGotowe) {
+                        handleUpdateOrderField(order.id, 'probkiGotowe', true);
+                      }
+                      return (
+                        <div className={`order-card ${selectedOrderId === order.id ? 'active' : ''}`} onClick={() => setSelectedOrderId(selectedOrderId === order.id ? null : order.id)}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <h3 style={{ margin: 0 }}>#{order.id}</h3>
+                            {ps.dataDodania && <span style={{ fontSize: '12px', color: '#666' }}>📅 {ps.dataDodania}</span>}
+                            {ps.transport && <span style={{ fontSize: '11px', color: '#888' }}>{ps.transport.substring(0, 30)}</span>}
+                            {allAvail && !allDone && <span title="Wszystkie próbki dostępne — można wysłać" style={{ fontSize: '14px' }}>✅</span>}
+                            {hasWyprodukuj && <span title="Zaznaczono do wyprodukowania" style={{ fontSize: '14px' }}>🔨</span>}
+                            {hasZlecone && <span title="Oczekiwanie na próbki — zlecone na produkcję" style={{ fontSize: '14px' }}>⏳</span>}
+                            {order.probkiGotowe && !order.probkiWyslane && <span style={{ background: '#e3f2fd', color: '#1565c0', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>📦 gotowe</span>}
+                            {order.probkiWyslane && <span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' }}>✅ wysłane</span>}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {selectedOrderId === order.id && (
                       <div className="card" style={{ borderLeft: '3px solid #9c27b0' }}>
                         <div style={{ fontSize: '13px', marginBottom: '8px' }}>
@@ -2479,26 +2673,33 @@ export default function App() {
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>{r.qty}</td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center', color: dostepne > 0 ? '#2e7d32' : '#999', fontWeight: dostepne > 0 ? 'bold' : 'normal' }}>{dostepne}</td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                        <input type="checkbox" checked={rs.spakowane || false} disabled={rs.pomin}
+                                        <input type="checkbox" checked={rs.spakowane || false}
+                                          disabled={rs.pomin || (!rs.spakowane && dostepne < parseInt(r.qty || 1))}
+                                          title={!rs.spakowane && dostepne < parseInt(r.qty || 1) ? 'Brak wystarczającej ilości na magazynie (' + dostepne + ' / ' + r.qty + ')' : ''}
                                           onChange={async () => {
                                             const newVal = !rs.spakowane;
                                             const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
                                             while (ns.length < rows.length) ns.push({});
                                             ns[i] = { ...ns[i], spakowane: newVal, pomin: false };
                                             handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
-                                            // Koryguj stan magazynu
                                             if (dekorNr && newVal) await updateMagazynProbek(dekorNr, -parseInt(r.qty || 1), { type: 'spakowanie', orderId: order.id, user: currentUser?.name || currentUser?.email || '?' });
                                             if (dekorNr && !newVal) await updateMagazynProbek(dekorNr, parseInt(r.qty || 1), { type: 'cofniecie spakowania', orderId: order.id, user: currentUser?.name || currentUser?.email || '?' });
                                           }} />
                                       </td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                        <input type="checkbox" checked={rs.wyprodukuj || false}
-                                          onChange={() => {
-                                            const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
-                                            while (ns.length < rows.length) ns.push({});
-                                            ns[i] = { ...ns[i], wyprodukuj: !rs.wyprodukuj };
-                                            handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
-                                          }} />
+                                        {rs.naOczekiwaniu ? (
+                                          <span style={{ fontSize: '10px', color: '#e65100', fontWeight: 'bold' }} title="Nie będzie teraz zrealizowany — wystaw korektę">⚠️ korekta</span>
+                                        ) : rs.zleconeNaProdukcje ? (
+                                          <span style={{ fontSize: '10px', color: '#1565c0' }} title="Zlecono na produkcję">⏳ zlecone</span>
+                                        ) : (
+                                          <input type="checkbox" checked={rs.wyprodukuj || false}
+                                            onChange={() => {
+                                              const ns = [...(order.probkiRowStatus || Array(rows.length).fill({}))];
+                                              while (ns.length < rows.length) ns.push({});
+                                              ns[i] = { ...ns[i], wyprodukuj: !rs.wyprodukuj };
+                                              handleUpdateOrderField(order.id, 'probkiRowStatus', ns);
+                                            }} />
+                                        )}
                                       </td>
                                       <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
                                         <input type="checkbox" checked={rs.pomin || false} disabled={rs.spakowane}
@@ -2542,8 +2743,10 @@ export default function App() {
                           <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <input type="checkbox" checked={order.probkiGotowe || false} onChange={() => handleUpdateOrderField(order.id, 'probkiGotowe', !order.probkiGotowe)} /> Gotowe do wysyłki
                           </label>
-                          <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <input type="checkbox" checked={order.probkiWyslane || false} onChange={() => handleUpdateOrderField(order.id, 'probkiWyslane', !order.probkiWyslane)} /> Wysłane
+                          <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', opacity: order.probkiGotowe ? 1 : 0.4 }}>
+                            <input type="checkbox" checked={order.probkiWyslane || false} disabled={!order.probkiGotowe}
+                              title={!order.probkiGotowe ? 'Najpierw zaznacz Gotowe do wysyłki' : ''}
+                              onChange={() => handleUpdateOrderField(order.id, 'probkiWyslane', !order.probkiWyslane)} /> Wysłane
                           </label>
                         </div>
 
