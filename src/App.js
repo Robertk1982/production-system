@@ -1858,7 +1858,7 @@ export default function App() {
       {appState === 'login' && (
         <div style={{ maxWidth: '400px', margin: '4rem auto' }}>
           <div className="card">
-            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.16</div>
+            <img src={LOGO} alt='Flexmeble' style={{ height: '50px', display: 'block', margin: '0 auto 1rem auto' }} /><h2 style={{ textAlign: 'center', margin: '0 0 0.5rem 0', color: '#555' }}>System produkcyjny</h2><div style={{ textAlign: 'center', fontSize: '12px', color: '#bbb', marginBottom: '1.5rem' }}>v25.17</div>
             <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="Email" style={{ width: '100%', marginBottom: '1rem' }} />
             <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} placeholder="Hasło" style={{ width: '100%', marginBottom: '1rem' }} />
             <button className="btn btn-primary" onClick={handleLogin} style={{ width: '100%' }}>Zaloguj</button>
@@ -2371,20 +2371,24 @@ export default function App() {
               {/* Panel Do wyprodukowania */}
               {showWyprodukujPanel && (() => {
                 // Build list: all wyprodukuj rows not yet spakowane
+                // Include all probki orders + archived ones for wyprodukuj
+                const allProbkiOrders = orders.filter(o => o.inProbki || o.probkiArchived);
                 const toWyprodukuj = [];
-                probkiOrders.forEach(ord => {
+                allProbkiOrders.forEach(ord => {
                   const ps2 = ord.prestashopData || {};
-                  const rows2 = parseProduktyFromRaw(ps2.produkty || '');
+                  const rowsBase = parseProduktyFromRaw(ps2.produkty || '');
+                  const extraRows = ord.extraProbki || [];
+                  const rows2 = [...rowsBase, ...extraRows.map(e => ({ name: e.nazwa, qty: e.qty, isExtra: true, extraIdx: e.idx }))];
                   rows2.forEach((r, i) => {
                     const rs = (ord.probkiRowStatus || [])[i] || {};
-                    if (rs.wyprodukuj) {
+                    if (rs.wyprodukuj && !rs.naOczekiwaniu) {
                       const dekorNr2 = extractDekorNr(r.name);
                       const dostepne2 = parseInt(magazynProbek[dekorNr2] || 0);
-                      // Check total needed across all orders for this dekor
                       let totalNeeded = 0;
-                      probkiOrders.forEach(o2 => {
-                        const r2 = parseProduktyFromRaw((o2.prestashopData?.produkty) || '');
-                        r2.forEach((rr, ii) => {
+                      allProbkiOrders.forEach(o2 => {
+                        const r2b = parseProduktyFromRaw((o2.prestashopData?.produkty) || '');
+                        const extra2 = o2.extraProbki || [];
+                        [...r2b, ...extra2.map(e => ({ name: e.nazwa, qty: e.qty }))].forEach((rr, ii) => {
                           const rs2 = (o2.probkiRowStatus || [])[ii] || {};
                           if (!rs2.spakowane && extractDekorNr(rr.name) === dekorNr2) totalNeeded += parseInt(rr.qty || 1);
                         });
@@ -2394,6 +2398,8 @@ export default function App() {
                     }
                   });
                 });
+                // Also add zamowProbkiRows as third "green" table — filter out wyprodukowane
+                const zamowActive = zamowProbkiRows.filter(z => !z.wyprodukowane);
                 const pilne = toWyprodukuj.filter(x => x.isPilne);
                 const niepilne = toWyprodukuj.filter(x => !x.isPilne);
 
@@ -2500,25 +2506,25 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Panel zamów próbki — zintegrowany w panelu */}
+                    {/* Trzecia tabelka: Zamów próbki — wygląd i działanie jak pilne/niepilne */}
                     <div style={{ marginBottom: '12px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#e65100' }}>📋 Zamów próbki (nie pilne):</div>
-                        <button className="btn" onClick={() => setShowZamowProbki(!showZamowProbki)} style={{ fontSize: '11px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#2e7d32' }}>📋 Zamów próbki (nie pilne — {zamowActive.length}):</div>
+                        <button className="btn" onClick={() => { fetchProbkiKatalog(); setShowZamowProbki(!showZamowProbki); }} style={{ fontSize: '11px' }}>
                           {showZamowProbki ? '✕' : '+ Dodaj'}
                         </button>
                       </div>
                       {showZamowProbki && (
                         <div style={{ position: 'relative', marginBottom: '6px' }}>
                           <input type="text" value={zamowProbkiSearchQ} onChange={e => setZamowProbkiSearchQ(e.target.value)}
-                            onFocus={() => { if (probkiKatalog.length === 0) fetchProbkiKatalog(); if (!zamowProbkiSearchQ) setZamowProbkiSearchQ(' '); }}
+                            onFocus={() => { if (!zamowProbkiSearchQ) setZamowProbkiSearchQ(' '); }}
                             placeholder="Szukaj próbki..."
-                            style={{ width: '100%', padding: '6px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '12px' }} />
+                            style={{ width: '100%', padding: '6px', border: '1px solid #a5d6a7', borderRadius: '4px', fontSize: '12px' }} />
                           {zamowProbkiSearchQ.trim() && (
                             <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '150px', overflow: 'auto', zIndex: 10, borderRadius: '4px' }}>
                               {probkiKatalog.filter(p => p.nazwa.toLowerCase().includes(zamowProbkiSearchQ.trim().toLowerCase()) || extractDekorNr(p.nazwa).includes(zamowProbkiSearchQ.trim())).slice(0, 20).map((p, pi) => (
                                 <div key={pi} style={{ padding: '5px 8px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
-                                  onMouseEnter={e => e.currentTarget.style.background = '#fff3e0'}
+                                  onMouseEnter={e => e.currentTarget.style.background = '#e8f5e9'}
                                   onMouseLeave={e => e.currentTarget.style.background = ''}
                                   onClick={async () => {
                                     const newList = [...zamowProbkiRows, { nazwa: p.nazwa, dekorNr: extractDekorNr(p.nazwa), addedAt: new Date().toISOString(), user: currentUser?.name || '?' }];
@@ -2529,46 +2535,54 @@ export default function App() {
                           )}
                         </div>
                       )}
-                      {zamowProbkiRows.length > 0 && (
+                      {zamowActive.length > 0 && (
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                          <thead><tr style={{ background: '#ffe0b2' }}>
-                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'left' }}>Próbka</th>
-                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Zlecone</th>
-                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Wyprodukowane</th>
-                            <th style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>Usuń</th>
+                          <thead><tr style={{ background: '#c8e6c9' }}>
+                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'left' }}>Próbka</th>
+                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Dostępne</th>
+                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Zlecone</th>
+                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Wyprodukowane</th>
+                            <th style={{ padding: '4px 6px', border: '1px solid #a5d6a7', textAlign: 'center' }}>Usuń</th>
                           </tr></thead>
                           <tbody>
-                            {zamowProbkiRows.map((zr, zi) => (
-                              <tr key={zi} style={{ background: zr.wyprodukowane ? '#e8f5e9' : '' }}>
-                                <td style={{ padding: '4px 6px', border: '1px solid #ddd' }}>{zr.nazwa}</td>
-                                <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                  <input type="checkbox" checked={zr.zlecone || false} onChange={async () => {
-                                    const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, zlecone: !x.zlecone } : x);
-                                    setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                  }} />
-                                </td>
-                                <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                  <input type="checkbox" checked={zr.wyprodukowane || false} onChange={async () => {
-                                    if (zr.wyprodukowane) return;
-                                    const il = window.prompt('Ile sztuk dodać do magazynu? (' + zr.nazwa + ')');
-                                    if (!il || isNaN(parseInt(il))) return;
-                                    if (zr.dekorNr) await updateMagazynProbek(zr.dekorNr, parseInt(il), { type: 'wyprodukowanie-zamow', user: currentUser?.name || '?' });
-                                    const nl = zamowProbkiRows.map((x, j) => j === zi ? { ...x, wyprodukowane: true } : x);
-                                    setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                  }} />
-                                </td>
-                                <td style={{ padding: '4px 6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                  <button onClick={async () => {
-                                    const nl = zamowProbkiRows.filter((_, j) => j !== zi);
-                                    setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
-                                  }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
-                                </td>
-                              </tr>
-                            ))}
+                            {zamowActive.map((zr, zi) => {
+                              const dst = parseInt(magazynProbek[zr.dekorNr] || 0);
+                              return (
+                                <tr key={zi}>
+                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9' }}>{zr.nazwa}</td>
+                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center', color: dst > 0 ? '#2e7d32' : '#999' }}>{dst}</td>
+                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
+                                    <input type="checkbox" checked={zr.zlecone || false} onChange={async () => {
+                                      const realIdx = zamowProbkiRows.findIndex((x, j) => !x.wyprodukowane && zamowProbkiRows.filter(y => !y.wyprodukowane).indexOf(x) === zi);
+                                      const nl = zamowProbkiRows.map((x, j) => {
+                                        const activeIdx = zamowProbkiRows.filter(y => !y.wyprodukowane).indexOf(x);
+                                        return activeIdx === zi ? { ...x, zlecone: !x.zlecone } : x;
+                                      });
+                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                    }} />
+                                  </td>
+                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
+                                    <input type="checkbox" checked={false} onChange={async () => {
+                                      const il = window.prompt('Ile sztuk dodać do magazynu? (' + zr.nazwa + ')');
+                                      if (!il || isNaN(parseInt(il))) return;
+                                      if (zr.dekorNr) await updateMagazynProbek(zr.dekorNr, parseInt(il), { type: 'wyprodukowanie-zamow', user: currentUser?.name || '?' });
+                                      const nl = zamowProbkiRows.map((x) => x === zr ? { ...x, wyprodukowane: true } : x);
+                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                    }} />
+                                  </td>
+                                  <td style={{ padding: '4px 6px', border: '1px solid #c8e6c9', textAlign: 'center' }}>
+                                    <button onClick={async () => {
+                                      const nl = zamowProbkiRows.filter(x => x !== zr);
+                                      setZamowProbkiRows(nl); await updateZamowProbkiList(nl);
+                                    }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       )}
-                      {zamowProbkiRows.length === 0 && !showZamowProbki && <p style={{ fontSize: '11px', color: '#999', margin: 0 }}>Brak zamówionych próbek</p>}
+                      {zamowActive.length === 0 && <p style={{ fontSize: '11px', color: '#666', margin: '4px 0 0' }}>Brak próbek do zamówienia</p>}
                     </div>
 
                     {pilne.length > 0 && (
@@ -2623,7 +2637,9 @@ export default function App() {
               <div className="search-box"><input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Szukaj..." /></div>
               {probkiOrders.filter(o => !searchQuery || o.id.includes(searchQuery)).map(order => {
                 const ps = order.prestashopData || {};
-                const rows = parseProduktyFromRaw(ps.produkty || '');
+                const rowsBase = parseProduktyFromRaw(ps.produkty || '');
+                const extraProbkiList = order.extraProbki || [];
+                const rows = [...rowsBase, ...extraProbkiList.map((ep, ei) => ({ name: ep.nazwa, qty: ep.qty, isExtra: true, extraIdx: ei }))];
                 return (
                   <React.Fragment key={order.docId}>
                     {(() => {
@@ -2635,12 +2651,12 @@ export default function App() {
                         const qty2 = parseInt(r2.qty || 1);
                         return { ...rs2, dostepne: dostepne2, qty: qty2, name: r2.name };
                       });
-                      const allDone = allStatuses.length > 0 && allStatuses.every(s => s.spakowane || s.pomin);
+                      const allDone = allStatuses.length > 0 && allStatuses.every(s => s.spakowane || s.pomin || s.naOczekiwaniu);
                       // canSend: all rows either spakowane, pominięte, available enough, or gotowe/korekta
                       const allAvail = allStatuses.length > 0 && allStatuses.every(s =>
                         s.spakowane || s.pomin || s.naOczekiwaniu || s.gotowe || s.dostepne >= s.qty
                       );
-                      const hasWyprodukuj = allStatuses.some(s => s.wyprodukuj && !s.spakowane && !s.zleconeNaProdukcje && !s.gotowe);
+                      const hasWyprodukuj = allStatuses.some(s => s.wyprodukuj && !s.spakowane && !s.zleconeNaProdukcje && !s.gotowe && !s.naOczekiwaniu);
                       const hasZlecone = allStatuses.some(s => s.zleconeNaProdukcje && !s.spakowane && !s.gotowe);
                       const hasGotowe = allStatuses.some(s => s.gotowe && !s.spakowane);
                       // Auto-check gotowe when all done
@@ -2741,6 +2757,63 @@ export default function App() {
                                 })}
                               </tbody>
                             </table>
+                          </div>
+                        )}
+
+                        {/* Dodaj do zamówienia */}
+                        <div style={{ marginBottom: '8px' }}>
+                          <button className="btn" onClick={() => {
+                            fetchProbkiKatalog();
+                            setKonsultacjeDataQ(prev => ({ ...prev, ['addProbka_' + order.id]: true }));
+                          }} style={{ fontSize: '12px' }}>+ Dodaj próbkę do zamówienia</button>
+                          {konsultacjeDataQ['addProbka_' + order.id] && (
+                            <div style={{ marginTop: '6px', position: 'relative' }}>
+                              <input type="text" autoFocus
+                                value={konsultacjeDataQ['addProbkaQ_' + order.id] || ''}
+                                onChange={e => setKonsultacjeDataQ(prev => ({ ...prev, ['addProbkaQ_' + order.id]: e.target.value }))}
+                                placeholder="Szukaj próbki..."
+                                style={{ width: '100%', padding: '5px', border: '1px solid #9fa8da', borderRadius: '4px', fontSize: '12px' }} />
+                              {(konsultacjeDataQ['addProbkaQ_' + order.id] || '').trim() && (
+                                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', maxHeight: '150px', overflow: 'auto', zIndex: 20, borderRadius: '4px' }}>
+                                  {probkiKatalog.filter(p =>
+                                    p.nazwa.toLowerCase().includes((konsultacjeDataQ['addProbkaQ_' + order.id] || '').toLowerCase()) ||
+                                    extractDekorNr(p.nazwa).includes(konsultacjeDataQ['addProbkaQ_' + order.id] || '')
+                                  ).slice(0, 20).map((p, pi) => (
+                                    <div key={pi} style={{ padding: '5px 8px', cursor: 'pointer', fontSize: '12px', borderBottom: '1px solid #f0f0f0' }}
+                                      onMouseEnter={e => e.currentTarget.style.background = '#e8eaf6'}
+                                      onMouseLeave={e => e.currentTarget.style.background = ''}
+                                      onClick={async () => {
+                                        const ilStr = window.prompt('Ile sztuk probki: ' + p.nazwa + '. Na magazynie: ' + parseInt(magazynProbek[extractDekorNr(p.nazwa)] || 0));
+                                        if (!ilStr || isNaN(parseInt(ilStr))) return;
+                                        const extra = [...(order.extraProbki || [])];
+                                        extra.push({ nazwa: p.nazwa, qty: ilStr, idx: Date.now() });
+                                        await handleUpdateOrderField(order.id, 'extraProbki', extra);
+                                        setKonsultacjeDataQ(prev => { const n = { ...prev }; delete n['addProbka_' + order.id]; delete n['addProbkaQ_' + order.id]; return n; });
+                                      }}>
+                                      {p.nazwa} <span style={{ color: '#666', fontSize: '11px' }}>mag: {parseInt(magazynProbek[extractDekorNr(p.nazwa)] || 0)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <button className="btn" onClick={() => setKonsultacjeDataQ(prev => { const n = { ...prev }; delete n['addProbka_' + order.id]; delete n['addProbkaQ_' + order.id]; return n; })}
+                                style={{ fontSize: '11px', marginTop: '4px' }}>✕ Anuluj</button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Extra próbki dodane ręcznie — z krzyżykiem */}
+                        {(order.extraProbki || []).length > 0 && (
+                          <div style={{ marginBottom: '8px', fontSize: '12px' }}>
+                            <div style={{ fontWeight: 'bold', marginBottom: '3px' }}>Dodane ręcznie:</div>
+                            {(order.extraProbki || []).map((ep, ei) => (
+                              <div key={ei} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 0' }}>
+                                <span>{ep.nazwa} ({ep.qty} szt.)</span>
+                                <button onClick={async () => {
+                                  const newExtra = (order.extraProbki || []).filter((_, j) => j !== ei);
+                                  await handleUpdateOrderField(order.id, 'extraProbki', newExtra);
+                                }} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#f44336', fontSize: '13px' }}>✕</button>
+                              </div>
+                            ))}
                           </div>
                         )}
 
